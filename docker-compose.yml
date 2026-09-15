@@ -1,0 +1,57 @@
+# Mise — REFERENCE copy of the compose service. The DEPLOYED copy lives in the
+# private homelab control repo at services/mise/docker-compose.yml; this file
+# exists so the repo documents its own deployment shape.
+#
+# ⚠️ Bind published ports to a specific host IP (the tailnet address on the
+# homelab), never 0.0.0.0 — Docker's iptables rules bypass UFW, so a 0.0.0.0
+# bind silently exposes the service to the whole LAN.
+services:
+  mise-web:
+    image: ghcr.io/ignacio-montero/mise:0.1.0   # pin a version; never :latest
+    container_name: mise-web
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:3003:3000"      # homelab uses 100.74.128.98:3003:3000
+    env_file: .env                  # GEMINI_API_KEY, OSTA_INGEST_TOKEN — untracked
+    environment:
+      DATABASE_URL: "file:/app/data/mise.db"
+      DATA_DIR: "/app/data"
+      DB_FILE: "/app/data/mise.db"
+      TZ: "Europe/London"
+      WORKER_ENABLED: "true"
+    volumes:
+      - mise-data:/app/data         # SQLite DB + hero images + temp downloads
+    mem_limit: 640m
+    memswap_limit: 640m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ⚠️ DISABLED BY DEFAULT — see docs/DECISIONS.md D-003. This bot needs its OWN
+  # Telegram token: only one process may long-poll a token, and tennisbot-prefs
+  # already holds the Tennis bot's. Starting this with a shared token breaks BOTH
+  # bots. Once a token exists, enable with:
+  #     docker compose --profile bot up -d mise-bot
+  mise-bot:
+    image: ghcr.io/ignacio-montero/mise:0.1.0   # SAME tag as mise-web, always
+    container_name: mise-bot
+    profiles: ["bot"]
+    restart: unless-stopped
+    init: true
+    command: ["bot"]
+    env_file: .env                  # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, OSTA_INGEST_TOKEN
+    environment:
+      MISE_API_BASE: "http://mise-web:3000"
+      TZ: "Europe/London"
+    depends_on:
+      mise-web:
+        condition: service_healthy
+    mem_limit: 128m                 # a fetch long-poll loop and nothing else
+    memswap_limit: 128m
+
+volumes:
+  mise-data:
