@@ -1,0 +1,92 @@
+// Mise — schema. See docs/ARCHITECTURE.md §4 for why ingredients/steps are JSON.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Recipe {
+  id             String    @id @default(cuid())
+  title          String
+  description    String?
+  // Unique so re-importing the same reel is a 409 with the existing recipe
+  // rather than a duplicate. Nullable for manual recipes (SQLite allows many NULLs).
+  sourceUrl      String?   @unique
+  sourcePlatform String    @default("manual") // instagram|tiktok|youtube|web|manual
+  sourceAuthor   String?
+  heroImagePath  String?   // "/api/images/<file>" — a URL, not a disk path
+  servings       String?
+  servingsCount  Int?      // parsed from `servings`; drives the scaler
+  totalMinutes   Int?
+  ingredients    String    @default("[]") // JSON Ingredient[]
+  steps          String    @default("[]") // JSON string[]
+  notes          String?
+  tags           String    @default("[]") // JSON string[]
+  extraction     String?                  // JSON Extraction (provenance)
+  favorite       Boolean   @default(false)
+  cookedCount    Int       @default(0)
+  lastCookedAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  folders      FolderRecipe[]
+  groceryItems GroceryItem[]
+  importJobs   ImportJob[]
+
+  @@index([createdAt])
+  @@index([favorite])
+}
+
+model Folder {
+  id        String         @id @default(cuid())
+  name      String         @unique
+  emoji     String?
+  createdAt DateTime       @default(now())
+  recipes   FolderRecipe[]
+}
+
+model FolderRecipe {
+  folderId String
+  recipeId String
+  folder   Folder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  recipe   Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@id([folderId, recipeId])
+  @@index([recipeId])
+}
+
+model GroceryItem {
+  id        String   @id @default(cuid())
+  text      String
+  checked   Boolean  @default(false)
+  // Kept when the recipe is deleted (SetNull) — the shopping list outlives it.
+  recipeId  String?
+  recipe    Recipe?  @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+
+  @@index([checked])
+}
+
+// The job queue IS this table. See docs/ARCHITECTURE.md §2.
+model ImportJob {
+  id        String   @id @default(cuid())
+  url       String
+  status    String   @default("pending") // pending|running|done|failed|not_recipe
+  stage     String?                      // fetching|transcribing|structuring
+  source    String   @default("web")     // telegram|web
+  chatId    String?                      // telegram: where to report back
+  messageId Int?                         // telegram: which message to EDIT
+  error     String?
+  rawText   String?                      // everything gathered — makes retry free
+  suppliedText String?                   // user-pasted caption (skips fetching)
+  attempts  Int      @default(0)
+  recipeId  String?
+  recipe    Recipe?  @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+}
