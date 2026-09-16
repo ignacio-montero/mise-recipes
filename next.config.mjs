@@ -6,5 +6,8 @@ const nextConfig = {
   // instrumentation.ts is how the in-process import worker is started exactly
   // once per server process (see docs/ARCHITECTURE.md §2).
   serverExternalPackages: ["@prisma/client", "sharp"],
+  // One build worker. Parallel workers each take their own heap, which is what
+  // pushes a QEMU cross-build past a small VM's memory ceiling (see Dockerfile).
+  experimental: { cpus: 1, workerThreads: false },
 };
 export default nextConfig;

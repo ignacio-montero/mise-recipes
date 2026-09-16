@@ -3,6 +3,10 @@
 Orientation for any Claude Code session in this repo. Loaded automatically at
 session start.
 
+**Status: v0.1.2 is LIVE on the homelab** at http://100.74.128.98:3003 (tailnet
+only). 430 tests passing, `tsc` clean. The Telegram bot is built and deployed but
+**not started** — it needs its own token; see D-003 and docs/NEXT_STEPS.md.
+
 ## What this is
 
 **Mise** — a self-hosted replica of the iOS app **Osta**: share an Instagram
@@ -122,6 +126,15 @@ polls that table. The job queue *is* the database table.
 - **zsh `echo` interprets `\n`.** Piping a curl'd JSON body through `echo "$VAR"`
   corrupts it into invalid JSON. Use `printf '%s'` or pipe curl straight into node.
   This is a debugging trap, not an app bug — it cost a confusing five minutes.
+- **⚠️ Cross-building amd64 on this Mac: re-register QEMU after a Colima restart.**
+  `docker buildx --platform linux/amd64` segfaults (`exit code: 139`,
+  `build worker exited with … SIGSEGV`) at a random step — `npm ci`,
+  `prisma generate`, `next build` — whenever the binfmt handlers are stale.
+  It looks exactly like an out-of-memory problem and is not: raising Colima's RAM
+  from 2 GB to 8 GB changed nothing. The fix is one command:
+  `docker run --privileged --rm tonistiigi/binfmt --install amd64`, then rebuild.
+  A native `npm run build` on the Mac passing while the container build dies is
+  the tell that the problem is the emulator, not the code.
 
 ## Deployment
 

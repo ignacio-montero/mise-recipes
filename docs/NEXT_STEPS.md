@@ -1,84 +1,110 @@
 # NEXT_STEPS — Mise
 
-**Read this first when picking the project back up.** Status as of
-**2026-09-15**.
+**Read this first when picking the project back up.** Status: **2026-09-16**.
 
-## Where the project is
-
-Design is complete and verified; implementation is in flight.
+## Status: v0.1.2 is BUILT, TESTED and LIVE on the homelab ✅
 
 | Area | State |
 |---|---|
-| Research (what actually works) | ✅ **Done and measured live.** `docs/RESEARCH-extraction.md` |
-| PRD / Architecture / API contract | ✅ Done. `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/API_SPEC.md` |
-| Schema + shared seams | ✅ Done. `prisma/schema.prisma`, `lib/{types,config,prisma,serialize,http,scale}.ts` |
-| Extraction engine + worker | 🔨 In progress — `lib/extract/**`, `lib/worker.ts`, `lib/gemini.ts` |
-| HTTP API | 🔨 In progress — `app/api/**` |
-| PWA frontend | 🔨 In progress — `app/`, `components/**` |
-| Telegram bot | 🔨 In progress — `bot/**` |
-| Deploy bundle | ✅ Done. `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml`, `scripts/publish.sh` |
-| Tests | ⬜ Not started |
-| Deployed to homelab | ⬜ Not yet |
+| Research (what actually works) | ✅ Measured live — `docs/RESEARCH-extraction.md` |
+| PRD / Architecture / API contract | ✅ `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/API_SPEC.md` |
+| Extraction pipeline (4 tiers) | ✅ TikTok, Instagram, JSON-LD, audio gate |
+| HTTP API (13 routes) + import worker | ✅ |
+| PWA frontend (list, cook view, add, grocery) | ✅ |
+| Telegram bot | ✅ Built + containerised — **not running, needs a token** |
+| Tests | ✅ **430 passing, 0 failing**; `npx tsc --noEmit` clean |
+| Red-team review | ✅ 3 critical + 5 warnings, all fixed and re-verified |
+| Deployed | ✅ `http://100.74.128.98:3003` — tailnet only, healthy |
 
-## The one thing that is verified end-to-end
+**How to use it right now (no bot needed):** on the phone, with Tailscale up,
+open **<http://100.74.128.98:3003>** → **Add** → paste an Instagram/TikTok/recipe
+link → it imports in ~10 s. Add to the Home Screen from **Safari**
+(Share → Add to Home Screen); Chrome on iOS silently makes a non-standalone
+shortcut instead.
 
-The core technical risk — *can we actually get a recipe out of a Reel?* — is
-**answered yes**, measured on 2026-09-15:
+## Proven end to end, on the box
 
-- TikTok caption via public oEmbed: works, no auth.
-- Instagram caption via `/embed/captioned`: works, no auth, on public reels.
-- Gemini turning that caption into correct structured JSON: 6.7 s, ~400 tokens.
+| Source | Tier | Model | Result |
+|---|---|---|---|
+| TikTok | `tier1:tiktok-oembed` | gemini-2.5-flash | 7 ingredients, 2 steps, hero image |
+| Instagram Reel | `tier1:instagram-embed` | gemini-2.5-flash | 8 ingredients, 11 steps, servings 6 |
+| BBC Good Food | `tier0:json-ld` | **null** | 15 ingredients — imported with `GEMINI_API_KEY` **empty**, which is what proves PRD S4 |
 
-Everything else is ordinary application code around that spine. Re-verify with
-the commands in `docs/RESEARCH-extraction.md` before assuming it still holds.
+## 🔴 The one thing blocked on you — ~3 minutes
 
-## Ordered next steps
+**A Telegram bot token.** `mise-bot` is written, tested, containerised and
+deployed-but-not-started (compose `profiles: ["bot"]`).
 
-1. **Integrate + typecheck.** `npx tsc --noEmit && npm run build`. The four
-   workstreams were built in parallel against `docs/API_SPEC.md`; expect the
-   seams (`workerStatus()`, DTO shapes) to need a pass.
-2. **Tests.** Priority order — they map to where the bugs will be:
-   `lib/scale.ts` (fractions, ranges, unparseable quantities),
-   `lib/extract/website.ts` (JSON-LD shape zoo), `lib/extract/heuristics.ts`
-   (the tier gate), `bot/format.ts` (Markdown escaping), then the API routes.
-3. **Local end-to-end.** `make build-local`, run the container, import the three
-   known-good fixtures in `docs/RESEARCH-extraction.md`, confirm recipes appear.
-4. **Publish + deploy** `mise-web` — see `DEPLOY.md`.
-5. **Field-test** against ~10 real saved Reels (PRD success criterion S1: 8/10
-   usable with no hand-editing). Fix what that exposes; it always exposes something.
+> It **cannot** borrow the Tennis bot's token, despite that being the original
+> plan. Only one process may long-poll a token; `tennisbot-prefs` holds the
+> Tennis one 24/7 and `legobot` holds the LEGO one. A second poller gets HTTP
+> 409 and then *both* bots drop updates intermittently — it would silently break
+> court booking. See `docs/DECISIONS.md` **D-003**.
 
-## Blocked / needs the user
+1. Telegram → **@BotFather** → `/newbot` (e.g. `Mise Recipe Bot`).
+2. Paste the token into `TELEGRAM_BOT_TOKEN` in `~/homelab/services/mise/.env`
+   on the server — the file already exists, mode 600, with the field blank.
+3. `ssh homelab 'cd ~/homelab && docker compose --profile bot up -d mise-bot'`
+4. Message the bot `/id` to confirm the chat id, then `docker logs mise-bot`.
+   **A line mentioning 409 means another process holds that token** — stop and
+   re-read D-003 rather than restarting in a loop.
 
-- **🔴 A Telegram bot token.** `mise-bot` is written and containerised but cannot
-  start without its own token — see `docs/DECISIONS.md` **D-003** for why it
-  cannot borrow the Tennis bot's. To unblock:
-  1. Telegram → **@BotFather** → `/newbot` → name it (e.g. `Mise Recipe Bot`,
-     username `@nacho_mise_bot`).
-  2. Put the token in `TELEGRAM_BOT_TOKEN` in the server's untracked
-     `~/homelab/services/mise/.env`.
-  3. Message the bot once, then `/id` gives the chat id for `TELEGRAM_CHAT_ID`.
-  4. `ssh homelab 'cd ~/homelab && docker compose --profile bot up -d mise-bot'`
-  No code change is needed — only the env var and that one command.
-- **🟠 HTTPS on the tailnet** (`docs/DECISIONS.md` **D-008**). Needs a `sudo`
-  password and a yes, because it is a networking change on the box:
-  `ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://100.74.128.98:3003'`
-  Until then the Paste button on `/add` is degraded — `navigator.clipboard`
-  needs a secure context.
-- **🟡 `GEMINI_API_KEY`.** Currently the only key on this machine belongs to
-  Media Tracker. Mise should get its own from
-  <https://aistudio.google.com/apikey> so quota and revocation are independent.
+No code change is needed. Then: Share a Reel → Telegram → Mise bot → done.
 
-## Known gaps versus Osta
+## 🟠 Worth doing next, in order
 
-- **Instagram comments are not read.** Osta's best trick — creators often park
-  the recipe in their own first comment. No no-auth route to comment bodies was
-  found (`docs/RESEARCH-extraction.md` §2). Mitigation today is the bot's
+1. **Field-test against ~10 of your own saved Reels** (PRD S1: 8/10 usable with
+   no hand-editing). This is the only remaining unknown, and it is the one that
+   decides whether the thing is actually good. Every recipe stores
+   `extraction.tiers`, so the data to answer OQ-2 accumulates for free.
+2. **HTTPS** (`docs/DECISIONS.md` D-008). Needs your sudo password, so it could
+   not be done unattended. Until then the Paste button on `/add` is degraded —
+   `navigator.clipboard` requires a secure context.
+   `ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://100.74.128.98:3003'`
+   → `https://homelab.tailf48262.ts.net:8443`, then set `MISE_PUBLIC_BASE` to match.
+   Rollback: `sudo tailscale serve --https=8443 off`.
+3. **Give Mise its own `GEMINI_API_KEY`** — it currently shares Media Tracker's,
+   so quota and revocation are entangled. <https://aistudio.google.com/apikey>.
+4. **`RecipeList.tsx` hard-codes `limit: 100`** and ignores `nextCursor`, so
+   recipe 101 is invisible. The pagination is fully built on the API side and
+   simply unused.
+
+## Known open items (none blocking)
+
+- **Instagram comments are not read** — Osta's best trick, since creators often
+  park the recipe in their first comment. No no-auth route to comment bodies was
+  found (`docs/RESEARCH-extraction.md` §2). Mitigation today: the bot's
   manual-caption fallback. Worth another research pass.
-- No nutrition info, no sharing, no meal planner — all deliberate (PRD §5).
+- **Grocery merge normalisation mismatch** — the candidate line is found with
+  punctuation-stripped matching but the sum is decided on raw remainders, so
+  `"lb Shrimp,"` vs `"lb shrimp"` does not merge. Consequence is a cosmetic
+  duplicate line, never a lost item. Pinned by a characterisation test.
+- `parseInstructions` collapses newline-separated steps into one for some
+  JSON-LD shapes; `/api/images` returns 500 (not 400) on a malformed
+  percent-escape. Both pinned with tests.
+- **No end-to-end UI tests.** The pure helpers in `components/` are well covered,
+  but nothing proves the components call them in the right order with a working
+  optimistic rollback. Highest-risk untested area.
+- `ImportJob.chatId`/`messageId` are written and never read — the bot polls and
+  edits on its own. Either delete the columns or use them to make the bot's
+  in-memory pending-map durable across restarts.
 
-## Open questions
+## Operational quick reference
 
-- **OQ-2** Is the audio-transcription tier worth its latency in practice, or is
-  caption-only enough? Measure after ~20 real imports — the provenance stored on
-  every recipe (`extraction.tiers`) is exactly the data that answers this.
-- **OQ-3** Keep `rawText` on failed jobs forever? Currently yes (retry is free).
+```bash
+# Health + worker liveness
+ssh homelab 'curl -s http://100.74.128.98:3003/api/health'
+ssh homelab 'docker logs --tail 40 mise-web'
+
+# Ship a change
+cd ~/Development/Osta_replica && make check      # tsc + 430 tests
+make publish VERSION=0.1.3
+# bump BOTH image tags in ~/Development/homelab/services/mise/docker-compose.yml
+ssh homelab 'cd ~/homelab && git pull && docker compose pull mise-web && docker compose up -d mise-web'
+
+# Back up every recipe (the mise-data volume is the only copy)
+ssh homelab 'docker run --rm -v homelab_mise-data:/d -v ~:/out alpine cp /d/mise.db /out/mise-backup.db'
+```
+
+⚠️ **Never `docker compose down -v`** — `mise-data` holds every saved recipe and
+hero image.

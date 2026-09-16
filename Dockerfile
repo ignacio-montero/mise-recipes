@@ -33,6 +33,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl \
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV DATABASE_URL="file:/tmp/build.db"
+# ⚠️ Build-time memory ceiling, not a performance tweak. Cross-building amd64 on
+# an arm64 Mac runs under QEMU inside a small Colima VM (2 GB by default), and
+# Next's build worker happily grows past that and is OOM-killed — surfacing as a
+# baffling `build worker exited with code: null and signal: SIGSEGV` rather than
+# anything mentioning memory. Capping the heap and pinning the build to a single
+# worker keeps it inside the VM, at the cost of a slower build. Native amd64
+# hosts are unaffected.
+ENV NODE_OPTIONS="--max-old-space-size=1536"
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npx prisma generate
 RUN npm run build
 

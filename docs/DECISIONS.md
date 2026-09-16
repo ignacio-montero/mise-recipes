@@ -121,3 +121,55 @@ service worker. Everything else works over HTTP on the tailnet.
 `ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://100.74.128.98:3003'`
 → `https://homelab.tailf48262.ts.net:8443`. Rollback:
 `sudo tailscale serve --https=8443 off`.
+
+---
+
+### D-009 — Enqueue is authenticated, not self-declared (2026-09-16)
+**What.** `POST /api/imports` requires either a valid `x-mise-token` OR a
+same-origin browser request. It previously checked the token only when the body
+said `"source": "telegram"`.
+**Why.** `source` is a label the caller chooses, so omitting it skipped the check
+entirely — authorisation decided by the request's own say-so. Authenticate first,
+then derive what the caller may do.
+**Also learned the hard way:** the first fix added a "no `Origin` header at all →
+assume an old browser, allow" fallback. A bare `curl` sends no Origin, so that
+fallback re-opened the exact hole it was closing. **Absence of evidence is not
+evidence of a browser.** Verified 401/401/401/202/202 across no-creds, bad token,
+cross-origin, valid token, same-origin.
+
+---
+
+### D-010 — One canonicaliser owns the dedupe key (2026-09-16)
+**What.** `lib/canonicalUrl.ts` is the single deriver of `Recipe.sourceUrl`, and
+the **worker** stores the RESOLVED identity, not the URL the user shared.
+**Why.** Two normalisers existed and disagreed — the API route stripped `www.`
+and the trailing slash, the extractor added both back — so the route's "already
+saved?" lookup could never match a stored row and the UNIQUE index enforced
+nothing. **A UNIQUE constraint on a *derived* value only enforces anything if
+every writer derives it identically.**
+The design question underneath: the iOS share sheet emits
+`instagram.com/share/<token>` with a **different token every share**. That is
+*provenance*; the reel's shortcode is *identity*. Dedupe must key on identity, so
+the worker — the first place the redirect has been resolved — decides the key.
+Enqueue-time dedupe stays best-effort; the save-time check is authoritative.
+**Sequel (same day):** `/share/reel/<token>/` is spelled exactly like
+`reel/<code>`, so classify's kinds-loop matched the share token as a shortcode
+and re-created the symptom through a different door. `/share/` is now checked
+**first**, and the ordering is load-bearing.
+
+---
+
+### D-011 — Bounded everything that crosses a trust boundary (2026-09-16)
+**What.** Model output strings are capped in `coerceParsed`; `htmlToText` scans at
+most 300 KB and no longer uses a backreferenced regex; import leases expire.
+**Why.** Three findings with one shape — *unbounded work on untrusted input*:
+- A `\1` backreference plus a lazy quantifier made every unclosed tag rescan to
+  end-of-string: **116 s** on a 3 MB page, measured. Synchronous on the only
+  thread, so health checks and the pipeline's own abort timers could not fire
+  either — a service outage, not a slow function. Linear scan now: **1 ms**.
+- An unbounded LLM title 400s Telegram twice (edit, then the send fallback), so
+  the chat sits on "⏳ Importing…" forever while the recipe saved fine.
+- Claiming a job by flipping `status` is a **lease with no expiry**; a failed
+  failure-write stranded a row in `running` forever and made that URL
+  permanently un-importable. Startup-only reaping covers "the process died", not
+  "the process is alive and dropped the ball". Now reclaimed per tick.
