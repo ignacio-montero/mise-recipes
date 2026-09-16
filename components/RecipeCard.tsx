@@ -33,7 +33,7 @@ export default function RecipeCard({
   recipe: Recipe;
   onToggleFavorite: (recipe: Recipe) => void;
 }) {
-  const meta = metaLine(recipe);
+  const meta = metaLine(recipe, { compact: true });
 
   return (
     <article className="recipe-card">

@@ -18,7 +18,7 @@ import {
   undoCookedLabel,
 } from "./cooked";
 import { applyFolderCountDelta, folderSummary, sortFolders } from "./folders";
-import { PLATFORM_LABEL, countsLine, formatMinutes, hostOf, relativeTime } from "./format";
+import { PLATFORM_LABEL, countsLine, formatMinutes, hostOf, relativeTime, describeExtraction } from "./format";
 import { useWakeLock } from "./useWakeLock";
 import type {
   Folder,
@@ -364,7 +364,7 @@ export default function CookView({
       <div className="cook__head">
         <h1 className="cook__title">{recipe.title}</h1>
         <div className="cook__meta">
-          {[time && `⏱ ${time}`, countsLine(recipe)].filter(Boolean).join(" · ")}
+          {[time && `⏱️ ${time}`, countsLine(recipe)].filter(Boolean).join(" · ")}
           {awake && (
             <>
               {" "}
@@ -430,7 +430,7 @@ export default function CookView({
             )}
           </div>
         ) : (
-          recipe.servings && <div className="cook__meta">🍽 {recipe.servings}</div>
+          recipe.servings && <div className="cook__meta">🍽️ {recipe.servings}</div>
         )}
 
         {/* Folders, in the HEADER rather than only on the About tab.
@@ -445,7 +445,7 @@ export default function CookView({
           onClick={() => setPickingFolders(true)}
           aria-haspopup="dialog"
         >
-          🗂{" "}
+          {recipe.folderIds.length === 0 ? "🗂 " : ""}
           {recipe.folderIds.length === 0
             ? "Add to folder"
             : folders
@@ -568,7 +568,7 @@ export default function CookView({
                 onClick={() => setPickingFolders(true)}
                 aria-haspopup="dialog"
               >
-                🗂{" "}
+                {recipe.folderIds.length === 0 ? "🗂 " : ""}
                 {recipe.folderIds.length === 0
                   ? "Add to a folder"
                   : folders
@@ -604,9 +604,7 @@ export default function CookView({
                   noisy transcript". */}
               {recipe.extraction && (
                 <div>
-                  Extracted via {recipe.extraction.tiers.join(" → ") || "unknown"}
-                  {recipe.extraction.model ? ` · ${recipe.extraction.model}` : ""}
-                  {` · confidence ${Math.round(recipe.extraction.confidence * 100)}%`}
+                  {describeExtraction(recipe.extraction)}
                 </div>
               )}
             </div>

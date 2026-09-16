@@ -11,6 +11,7 @@ import {
   progressLine,
   removeById,
   sourceLabel,
+  sourceLabelAt,
   splitByChecked,
 } from "./grocery";
 import type {
@@ -208,8 +209,14 @@ export default function GroceryList() {
         {status === "ready" && items.length > 0 && (
           <>
             <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-              {open.map((item) => (
-                <Row key={item.id} item={item} onToggle={toggle} onDelete={remove} />
+              {open.map((item, i) => (
+                <Row
+                  key={item.id}
+                  item={item}
+                  onToggle={toggle}
+                  onDelete={remove}
+                  sourceOverride={sourceLabelAt(open, i)}
+                />
               ))}
             </ul>
 
@@ -265,12 +272,14 @@ function Row({
   item,
   onToggle,
   onDelete,
+  sourceOverride,
 }: {
   item: GroceryItem;
   onToggle: (item: GroceryItem) => void;
   onDelete: (item: GroceryItem) => void;
+  sourceOverride?: string;
 }) {
-  const source = sourceLabel(item);
+  const source = sourceOverride ?? sourceLabel(item);
   return (
     <li className="gro-row">
       <button

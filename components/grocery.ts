@@ -75,6 +75,29 @@ export function sourceLabel(item: Pick<GroceryItem, "recipeTitle">): string {
   return title ? `from ${title}` : "";
 }
 
+/**
+ * The same label, but blank when the row above already said it.
+ *
+ * "Add to grocery list" appends a whole recipe at once, so every one of those
+ * rows carried an identical "from Crispy Shrimp Tacos" — twelve repetitions of
+ * one fact, which is noise that pushes the actual shopping list off the screen.
+ * Printing it once per RUN keeps the provenance without the chatter, and reads
+ * the way a person would write the list by hand.
+ *
+ * Pure and index-based so it stays testable without a renderer.
+ */
+export function sourceLabelAt(
+  items: readonly Pick<GroceryItem, "recipeTitle">[],
+  index: number,
+): string {
+  const item = items[index];
+  if (!item) return "";
+  const label = sourceLabel(item);
+  if (!label) return "";
+  const prev = index > 0 ? items[index - 1] : undefined;
+  return prev && sourceLabel(prev) === label ? "" : label;
+}
+
 /** Trim and reject the empties before they reach the API. Returns null when
  *  there is nothing worth POSTing, so the caller can no-op silently instead of
  *  making the server say "`text` is required". */

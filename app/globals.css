@@ -460,6 +460,17 @@ button { font-family: inherit; }
   padding-bottom: 2px;
 }
 .chip-row::-webkit-scrollbar { display: none; }
+/* A right-edge fade so an overflowing chip row LOOKS scrollable. Without it the
+   last chip is simply sliced by the viewport edge, which reads as a rendering
+   bug rather than as "there is more over here" — and the Folders control lives
+   at the end of that row, so it was effectively undiscoverable.
+   mask-image is the cheap version: no JS, no scroll listener. The cost is that
+   the fade shows even when nothing overflows; at a 6px taper that is invisible. */
+.chip-row {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+  padding-right: 24px;
+}
 
 .chip {
   appearance: none;
@@ -796,6 +807,13 @@ button { font-family: inherit; }
   background: var(--herb);
   border-color: var(--herb);
   color: #fff;
+}
+/* Opt OUT of the strikethrough where "ticked" means "included", not "done".
+   Scoped to the picker rather than removed from .tick-row, because crossing off
+   an ingredient you have already added is the whole point of that style. */
+.folder-pick .tick-row[aria-pressed="true"] .tick-text {
+  text-decoration: none;
+  font-weight: 700;
 }
 .tick-row[aria-pressed="true"] .tick-text {
   text-decoration: line-through;

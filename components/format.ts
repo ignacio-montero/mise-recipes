@@ -44,12 +44,17 @@ export const PLATFORM_GLYPH: Record<Platform, string> = {
  */
 export function metaLine(
   r: Pick<Recipe, "totalMinutes" | "servings" | "sourceAuthor" | "sourcePlatform">,
+  opts: { compact?: boolean } = {},
 ): string {
   const parts: string[] = [];
   const time = formatMinutes(r.totalMinutes);
-  if (time) parts.push(`⏱ ${time}`);
-  if (r.servings?.trim()) parts.push(`\u{1F37D} ${r.servings.trim()}`);
-  if (r.sourceAuthor?.trim()) {
+  if (time) parts.push(`\u{23F1}\u{FE0F} ${time}`);
+  if (r.servings?.trim()) parts.push(`\u{1F37D}\u{FE0F} ${r.servings.trim()}`);
+  // COMPACT drops the author. On a 375px card all three parts do not fit, and
+  // the author was the one ellipsised to a useless "@…" — while the platform
+  // badge underneath already says Instagram/TikTok and the cook view shows the
+  // full handle as a link. Better to omit a field than to render a stub of it.
+  if (!opts.compact && r.sourceAuthor?.trim()) {
     const a = r.sourceAuthor.trim();
     parts.push(`${PLATFORM_GLYPH[r.sourcePlatform] ?? ""} ${a.startsWith("@") ? a : `@${a}`}`.trim());
   }
@@ -78,7 +83,7 @@ export function relativeTime(iso: string | null | undefined, now: number = Date.
   if (diff < HOUR) return `${Math.floor(diff / MINUTE)} min ago`;
   if (diff < DAY) {
     const h = Math.floor(diff / HOUR);
-    return `${h} h ago`;
+    return `${h}h ago`;
   }
   const days = Math.floor(diff / DAY);
   if (days === 1) return "yesterday";
@@ -108,4 +113,39 @@ export function countsLine(r: Pick<Recipe, "ingredients" | "steps">): string {
   const i = r.ingredients.length;
   const s = r.steps.length;
   return `${i} ingredient${i === 1 ? "" : "s"} · ${s} step${s === 1 ? "" : "s"}`;
+}
+
+/**
+ * Provenance, in English.
+ *
+ * The raw trace is ["tier1:instagram-embed", "tier3:gemini:gemini-2.5-flash"],
+ * which rendered as "Extracted via tier1:instagram-embed → tier3:gemini:
+ * gemini-2.5-flash · gemini-2.5-flash · confidence 90%" — internal labels, the
+ * model name printed twice, and too long for its column so it clipped mid-word.
+ * The information is genuinely useful (it is how you tell a caption-derived
+ * recipe from a guess off a noisy transcript), so the fix is to say it plainly
+ * rather than to drop it.
+ */
+const TIER_PHRASE: Record<string, string> = {
+  "tier0:json-ld": "read straight from the page's recipe data",
+  "tier1:instagram-embed": "read from the Instagram caption",
+  "tier1:tiktok-oembed": "read from the TikTok caption",
+  "tier1:youtube": "read from the YouTube description",
+  "tier1:website": "read from the page text",
+  "tier1:supplied-text": "read from text you pasted",
+};
+
+export function describeExtraction(
+  extraction: { tiers: string[]; model: string | null; confidence: number } | null,
+): string {
+  if (!extraction) return "";
+  const source = extraction.tiers.map((t) => TIER_PHRASE[t]).find(Boolean);
+  const heard = extraction.tiers.some((t) => t.startsWith("tier2:"));
+  const bits: string[] = [];
+  if (source) bits.push(source[0].toUpperCase() + source.slice(1));
+  if (heard) bits.push("plus the spoken audio");
+  if (extraction.model) bits.push(`structured by ${extraction.model}`);
+  const line = bits.join(", ");
+  const pct = Math.round(extraction.confidence * 100);
+  return line ? `${line} · ${pct}% confident` : `${pct}% confident`;
 }

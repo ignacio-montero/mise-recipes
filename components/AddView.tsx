@@ -79,6 +79,22 @@ export default function AddView() {
 
   const [recent, setRecent] = useState<ImportJob[]>([]);
   const [clipboardBlocked, setClipboardBlocked] = useState(false);
+  /**
+   * Is the Clipboard API even available here?
+   *
+   * `navigator.clipboard` is undefined outside a SECURE CONTEXT, and this app is
+   * reached over plain http on the tailnet — so on the deployed instance the
+   * answer is usually no. Discovering that only after the user taps the most
+   * prominent button on the screen makes the app look broken; knowing it on
+   * mount lets us demote Paste and promote the thing that does work.
+   * Checked in an effect, not during render, because it is a browser fact and
+   * the server has no opinion — reading it during render would produce markup
+   * the client immediately contradicts (a hydration mismatch).
+   */
+  const [canPaste, setCanPaste] = useState(true);
+  useEffect(() => {
+    setCanPaste(typeof navigator !== "undefined" && !!navigator.clipboard?.readText && window.isSecureContext);
+  }, []);
 
   const [manualOpen, setManualOpen] = useState(false);
   const [manualTitle, setManualTitle] = useState("");
@@ -334,23 +350,35 @@ export default function AddView() {
           </div>
 
           <div className="paste-actions">
+            {/* Paste is hidden, not just disabled, when the Clipboard API is
+                absent: a permanently greyed-out primary button invites tapping
+                and explains nothing. Over plain http (the tailnet default) the
+                honest UI is a plain paste box with Import as the main action. */}
+            {canPaste && (
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={pasteAndImport}
+                disabled={busy}
+              >
+                {submitting ? <span className="spinner" /> : "📋"} Paste
+              </button>
+            )}
             <button
-              type="button"
-              className="btn btn--primary"
-              onClick={pasteAndImport}
-              disabled={busy}
+              type="submit"
+              className={canPaste ? "btn" : "btn btn--primary"}
+              disabled={busy || paste.trim() === ""}
             >
-              {submitting ? <span className="spinner" /> : "📋"} Paste
-            </button>
-            <button type="submit" className="btn" disabled={busy || paste.trim() === ""}>
               Import
             </button>
           </div>
 
           <p className="muted" style={{ margin: 0, fontSize: 13.5, lineHeight: 1.5 }}>
-            {clipboardBlocked
-              ? "Your browser wouldn't hand over the clipboard (it only allows that over HTTPS). Long-press the box above and paste there instead."
-              : "In Instagram or TikTok: Share → Copy link, then come back and tap Paste."}
+            {!canPaste
+              ? "In Instagram or TikTok: Share → Copy link, then long-press the box above and paste. (One-tap paste needs HTTPS, which this address doesn't use.)"
+              : clipboardBlocked
+                ? "Your browser wouldn't hand over the clipboard. Long-press the box above and paste there instead."
+                : "In Instagram or TikTok: Share → Copy link, then come back and tap Paste."}
           </p>
         </form>
 
