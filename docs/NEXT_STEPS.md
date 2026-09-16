@@ -2,7 +2,7 @@
 
 **Read this first when picking the project back up.** Status: **2026-09-16**.
 
-## Status: v0.1.2 is BUILT, TESTED and LIVE on the homelab ✅
+## Status: v0.2.0 is BUILT, TESTED and LIVE on the homelab ✅
 
 | Area | State |
 |---|---|
@@ -11,8 +11,8 @@
 | Extraction pipeline (4 tiers) | ✅ TikTok, Instagram, JSON-LD, audio gate |
 | HTTP API (13 routes) + import worker | ✅ |
 | PWA frontend (list, cook view, add, grocery) | ✅ |
-| Telegram bot | ✅ Built + containerised — **not running, needs a token** |
-| Tests | ✅ **430 passing, 0 failing**; `npx tsc --noEmit` clean |
+| Telegram bot | ✅ **RUNNING** as @Osta_clon_bot |
+| Tests | ✅ **489 passing, 0 failing**; `npx tsc --noEmit` clean |
 | Red-team review | ✅ 3 critical + 5 warnings, all fixed and re-verified |
 | Deployed | ✅ `http://<tailnet-ip>:3003` — tailnet only, healthy |
 
@@ -28,28 +28,13 @@ shortcut instead.
 |---|---|---|---|
 | TikTok | `tier1:tiktok-oembed` | gemini-2.5-flash | 7 ingredients, 2 steps, hero image |
 | Instagram Reel | `tier1:instagram-embed` | gemini-2.5-flash | 8 ingredients, 11 steps, servings 6 |
+| Instagram Reel, thin caption | `tier1:instagram-embed` + **`tier2:audio`** | gemini-2.5-flash | transcript fetched and transcribed; correctly `not_recipe` — the reel's audio was background music, not narration, and the model refused to invent a recipe from song lyrics |
 | BBC Good Food | `tier0:json-ld` | **null** | 15 ingredients — imported with `GEMINI_API_KEY` **empty**, which is what proves PRD S4 |
 
-## 🔴 The one thing blocked on you — ~3 minutes
+## ✅ The Telegram bot is live
 
-**A Telegram bot token.** `mise-bot` is written, tested, containerised and
-deployed-but-not-started (compose `profiles: ["bot"]`).
-
-> It **cannot** borrow the Tennis bot's token, despite that being the original
-> plan. Only one process may long-poll a token; `tennisbot-prefs` holds the
-> Tennis one 24/7 and `legobot` holds the LEGO one. A second poller gets HTTP
-> 409 and then *both* bots drop updates intermittently — it would silently break
-> court booking. See `docs/DECISIONS.md` **D-003**.
-
-1. Telegram → **@BotFather** → `/newbot` (e.g. `Mise Recipe Bot`).
-2. Paste the token into `TELEGRAM_BOT_TOKEN` in `~/homelab/services/mise/.env`
-   on the server — the file already exists, mode 600, with the field blank.
-3. `ssh homelab 'cd ~/homelab && docker compose --profile bot up -d mise-bot'`
-4. Message the bot `/id` to confirm the chat id, then `docker logs mise-bot`.
-   **A line mentioning 409 means another process holds that token** — stop and
-   re-read D-003 rather than restarting in a loop.
-
-No code change is needed. Then: Share a Reel → Telegram → Mise bot → done.
+Running as **@Osta_clon_bot**. Share a Reel from the iOS share sheet → Telegram →
+the bot, and the recipe is saved. Verified end to end on real posts.
 
 ## 🟠 Worth doing next, in order
 

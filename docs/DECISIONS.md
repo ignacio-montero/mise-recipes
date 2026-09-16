@@ -173,3 +173,54 @@ most 300 KB and no longer uses a backreferenced regex; import leases expire.
   failure-write stranded a row in `running` forever and made that URL
   permanently un-importable. Startup-only reaping covers "the process died", not
   "the process is alive and dropped the ball". Now reclaimed per tick.
+
+---
+
+### D-012 — Undo is a `DELETE`, and the floor lives in the `WHERE` clause (2026-09-16)
+**What.** `DELETE /api/recipes/:id/cooked` decrements `cookedCount`, nulls
+`lastCookedAt` at zero, and is idempotent at zero.
+**Why the verb.** `DELETE` is *expected* to be repeatable, so "undo at zero is a
+no-op" needs no explaining. **Rejected:** `POST {delta:-1}`, which would make the
+same endpoint idempotent-except-sometimes.
+**Why the guard is SQL, not JS.** The decrement is
+`updateMany({ where: { id, cookedCount: { gt: 0 } }, data: { decrement: 1 } })`.
+The floor is in the `WHERE`, so the **database** decides eligibility and two
+concurrent undos can only succeed once. Read-count → subtract in JS → write is
+the classic **lost update**: two taps both read 1 and both write 0.
+**Limit, stated:** undoing 3→2 leaves `lastCookedAt` where it was. There is only
+a counter, no cook history. Exact undo needs a `CookEvent` row per cook.
+
+---
+
+### D-013 — "Unknown" is not "fails the check" (2026-09-16)
+**What.** The audio tier now runs when a video's duration is unknown, and
+yt-dlp's `--match-filter` is applied only when the duration is known.
+**Why.** Tier 2 was fully implemented and had **never once run**. Two layers had
+independently made the same mistake:
+1. our gate said `if (duration === null || duration > max) skip` — and Instagram
+   reports `duration: NA` for *every* reel, so it always skipped;
+2. underneath, yt-dlp's `--match-filter duration < N` **rejects an unknown
+   duration too**, not just a long one — and its documented `?` optional-field
+   suffix does not change that (measured on a real reel 2026-09-16: both
+   `duration < 301` and `duration<301?` logged "does not pass filter").
+Both conflated *absence of a value* with *a value that fails the test*, and both
+defaulted to refusing. That is the safe-looking default, and it silently disabled
+the feature on the platform it mattered most for.
+**Same shape as D-009**, where "no `Origin` header" was treated as "probably a
+browser" — same conflation, opposite failure direction. **A condition that can be
+unknown needs its own branch and a deliberate decision.**
+**Safety is unchanged:** `--max-filesize 48M` plus a SIGKILL timeout bound the
+download either way; a long video is aborted mid-download rather than filling the
+SSD. Less precise than a duration check, equally protective.
+**Verified in production:** a reel whose audio is background music produced a
+transcript of song lyrics and was correctly classified `not_recipe` — the tier
+ran, and the model refused to invent a recipe from it.
+
+---
+
+### D-014 — `?folder=none` belongs on the server (2026-09-16)
+**What.** A reserved `?folder=none` on `GET /api/recipes` means "filed nowhere".
+**Why.** The "Unfiled" chip first filtered client-side over whatever page was
+already loaded. Correct with 12 recipes, quietly wrong at 101 — the kind of bug
+that ships green and surfaces months later as "some recipes are missing". Safe as
+a sentinel because folder ids are cuids: always longer, always `c`-prefixed.

@@ -3,9 +3,9 @@
 Orientation for any Claude Code session in this repo. Loaded automatically at
 session start.
 
-**Status: v0.1.2 is LIVE on the homelab** at http://<tailnet-ip>:3003 (tailnet
-only). 430 tests passing, `tsc` clean. The Telegram bot is built and deployed but
-**not started** — it needs its own token; see D-003 and docs/NEXT_STEPS.md.
+**Status: v0.2.0 is LIVE on the homelab** at http://<tailnet-ip>:3003 (tailnet
+only), with the Telegram bot running as @Osta_clon_bot. 489 tests passing, `tsc`
+clean. Public repo: https://github.com/ignacio-montero/mise-recipes
 
 ## What this is
 
