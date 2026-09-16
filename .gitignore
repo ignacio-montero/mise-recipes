@@ -13,3 +13,8 @@ data/
 tmp/
 .DS_Store
 coverage/
+
+# Prisma dev DBs at ANY depth — a relative file: URL resolves against
+# prisma/schema.prisma, so a wrong DATABASE_URL creates prisma/prisma/dev.db.
+prisma/**/*.db
+prisma/**/*.db-journal
