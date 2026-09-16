@@ -80,7 +80,10 @@ export function extractUrls(text: string, entities?: TgEntity[]): string[] {
   const out: string[] = [];
   const push = (raw: string | undefined) => {
     if (!raw) return;
-    const u = raw.trim().replace(TRAILING_JUNK, "");
+    // `split(/\s/)[0]` is belt-and-braces: a well-formed entity span never
+    // contains whitespace, but a malformed update must not turn into a URL
+    // with a space in it.
+    const u = raw.trim().split(/\s/)[0].replace(TRAILING_JUNK, "");
     if (!/^https?:\/\//i.test(u)) return;
     if (!out.includes(u)) out.push(u);
   };

@@ -27,6 +27,9 @@ export const config = {
   telegram: {
     botToken: str("TELEGRAM_BOT_TOKEN"),
     chatId: str("TELEGRAM_CHAT_ID"),
+    /** Overridable so the bot's polling loop can be pointed at a local stub in
+     *  tests — there is no other way to exercise it without a live token. */
+    apiBase: str("TELEGRAM_API_BASE", "https://api.telegram.org"),
   },
   ingestToken: str("OSTA_INGEST_TOKEN"),
   apiBase: str("MISE_API_BASE", "http://localhost:3000"),

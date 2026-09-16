@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "bot": "tsx bot/index.ts",
+    "bot": "tsx --env-file-if-exists=.env bot/index.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "icons": "node scripts/make-icons.mjs",

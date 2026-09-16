@@ -1,0 +1,1022 @@
+/* Mise — base styles + the whole design system. Plain CSS, no framework.
+
+   DESIGN TARGET: an iPhone on a worktop, held in one greasy hand, in a kitchen
+   with bad overhead light. Everything below follows from that:
+     - a fixed app frame (100dvh) so the chrome never slides away mid-tap,
+     - a bottom tab bar inside thumb reach,
+     - 44px minimum tap targets everywhere, no exceptions,
+     - safe-area padding so nothing hides under the notch or home indicator,
+     - a full dark theme, because a bright white screen at 7pm is unreadable
+       next to a hob and a white screen at 11pm is worse,
+     - one media query at 720px that restores a desktop arrangement.
+
+   This is the same skeleton as Blue Plaque Hunter (the sibling app on the same
+   homelab) on purpose: the two should feel like they came from one hand, and
+   reusing a shell that is already proven on this exact device is cheaper than
+   re-deriving it. The palette is where they diverge — Mise is warm (paprika,
+   toast, cream) rather than plaque-blue. */
+
+/* ---- Design tokens ----
+   CONCEPT — CUSTOM PROPERTIES AS A THEME LAYER. Every colour below is declared
+   once here and referenced by name everywhere else. That is what makes dark
+   mode ~20 lines instead of a second stylesheet: the `prefers-color-scheme`
+   block just re-points the same names at different values, and because custom
+   properties cascade at RUNTIME (unlike a Sass variable, which is substituted
+   at build time), every rule in the file updates with no extra work. */
+:root {
+  color-scheme: light dark;
+
+  --paprika: #c04f28;
+  --paprika-dark: #a33f1d;
+  --herb: #3f7d4f;
+  --gold: #d99a2b;
+
+  --bg: #faf6f1;
+  --surface: #ffffff;
+  --surface-2: #f2ece5;
+  --border: #e6ded4;
+  --text: #221f1c;
+  --text-muted: #6d645b;
+  --danger: #b3382f;
+  --danger-bg: #fbeeed;
+  --danger-border: #eac7c3;
+  --info-bg: #f3f0fb;
+  --info-border: #d9d2ee;
+  --info-text: #4a3f75;
+  --warn-bg: #fdf4e0;
+  --warn-border: #ecd9a6;
+  --warn-text: #6b551b;
+  --ok-bg: #e9f4ec;
+  --press: #ece5dc;
+
+  --radius: 12px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgba(60, 40, 20, 0.06), 0 6px 16px rgba(60, 40, 20, 0.07);
+
+  /* Resolved once so no rule has to repeat the env() fallback dance.
+     Non-notched devices resolve these to 0px. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+/* Dark theme. Not an inversion: pure black eats the warm character and pure
+   white text on it smears, so the ground is a warm near-black and the text is
+   a warm off-white. The accent is LIGHTENED — #c04f28 on a dark ground fails
+   contrast, which is the classic mistake when a brand colour is reused as-is
+   in both themes. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paprika: #f0774a;
+    --paprika-dark: #ff8d63;
+    --herb: #6fbd83;
+    --gold: #e6b352;
+
+    --bg: #16130f;
+    --surface: #221e19;
+    --surface-2: #2c2721;
+    --border: #3a332b;
+    --text: #f4efe8;
+    --text-muted: #a99e91;
+    --danger: #ff8478;
+    --danger-bg: #3a201d;
+    --danger-border: #5c332d;
+    --info-bg: #241f33;
+    --info-border: #3b3350;
+    --info-text: #c9c0ea;
+    --warn-bg: #332a15;
+    --warn-border: #4e4222;
+    --warn-text: #e8cf92;
+    --ok-bg: #1d3323;
+    --press: #332c24;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.4);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  color: var(--text);
+  background: var(--bg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  /* Kills the grey box iOS paints over every tapped control; we draw our own
+     :active states, which feel immediate rather than laggy. */
+  -webkit-tap-highlight-color: transparent;
+  /* Stops the whole app rubber-banding when an inner pane hits its end. */
+  overscroll-behavior: none;
+}
+
+a { color: inherit; text-decoration: none; }
+h1, h2, h3 { line-height: 1.2; margin: 0; }
+button { font-family: inherit; }
+
+/* ---- App shell ----
+   A FIXED FRAME, not a scrolling document: the shell is exactly one viewport
+   tall and the panes inside it scroll. That is what keeps the tab bar pinned.
+   `100dvh` (dynamic viewport height) rather than `100vh` because iOS Safari's
+   `vh` includes the collapsing address bar, which parks ~60px of the app
+   permanently below the fold. */
+.app-shell {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-main {
+  order: 1;
+  flex: 1;
+  min-height: 0;   /* without this a flex child refuses to shrink and scroll */
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Skip link: the standard remedy for a visual/DOM order mismatch. Off-screen
+   until focused, then the first thing a keyboard user lands on. */
+.skip-link {
+  position: fixed;
+  top: -100px;
+  left: 8px;
+  z-index: 2000;
+  background: var(--surface);
+  color: var(--paprika);
+  font-weight: 700;
+  padding: 12px 16px;
+  border-radius: 0 0 10px 10px;
+  box-shadow: var(--shadow);
+  transition: top 0.1s ease;
+}
+.skip-link:focus { top: 0; }
+
+/* ---- Bottom tab bar ---- */
+.tabbar {
+  /* The bar is FIRST in the DOM (nav before main — the landmark order screen
+     readers and the tab sequence follow) and moved to the bottom visually on
+     phones, where the top of the screen is out of one-handed thumb reach.
+     `order` moves pixels only, never focus, which is why the skip link exists. */
+  order: 2;
+  flex: none;
+  display: flex;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+  z-index: 1000;
+  box-shadow: 0 -1px 8px rgba(0, 0, 0, 0.06);
+}
+
+.tabbar__link {
+  flex: 1;
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--text-muted);
+  transition: color 0.12s ease;
+}
+.tabbar__link:active { background: var(--press); }
+.tabbar__link[aria-current="page"] { color: var(--paprika); }
+.tabbar__label { font-size: 11px; font-weight: 600; letter-spacing: 0.01em; }
+
+/* Wide screens: the thumb-reach argument disappears and a bottom bar becomes a
+   long mouse trip, so the bar returns to the top as a conventional header —
+   where visual order and DOM order finally agree. */
+@media (min-width: 720px) {
+  .tabbar {
+    order: 0;
+    justify-content: flex-start;
+    gap: 4px;
+    padding: 6px 12px;
+    border-top: none;
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  }
+  .tabbar__link {
+    flex: 0 0 auto;
+    flex-direction: row;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: 8px;
+  }
+  .tabbar__link[aria-current="page"] { background: var(--surface-2); }
+  .tabbar__label { font-size: 14px; }
+}
+
+.tabbar__brand {
+  display: none;
+}
+@media (min-width: 720px) {
+  .tabbar__brand {
+    display: flex;
+    align-items: center;
+    font-weight: 800;
+    font-size: 17px;
+    letter-spacing: 0.02em;
+    color: var(--paprika);
+    padding: 0 14px 0 4px;
+    margin-right: 4px;
+  }
+}
+
+/* ---- Primitives ---- */
+.page {
+  padding: 16px;
+  padding-left: max(16px, var(--safe-left));
+  padding-right: max(16px, var(--safe-right));
+  padding-bottom: 32px;
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  /* 44px: Apple's and Google's tap-target floor. Below it, one-handed taps
+     with wet fingers start missing. Every control in this file obeys it. */
+  min-height: 44px;
+  padding: 11px 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+.btn:active { background: var(--press); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn--primary { background: var(--paprika); border-color: var(--paprika); color: #fff; }
+.btn--primary:active { background: var(--paprika-dark); }
+.btn--success { background: var(--herb); border-color: var(--herb); color: #fff; }
+.btn--danger { color: var(--danger); border-color: var(--danger-border); }
+.btn--danger:active { background: var(--danger-bg); }
+.btn--block { width: 100%; }
+.btn--sm { min-height: 44px; padding: 8px 12px; font-size: 14px; }
+/* A square icon-only button. Still 44px — "it's just an X" is exactly how a
+   minimum stops being a minimum. */
+.btn--icon { width: 44px; min-width: 44px; padding: 0; }
+
+@media (prefers-color-scheme: dark) {
+  .btn--primary, .btn--success { color: #1a1410; }
+}
+
+@media (hover: hover) {
+  .btn:hover { background: var(--surface-2); }
+  .btn--primary:hover { background: var(--paprika-dark); }
+  .btn--danger:hover { background: var(--danger-bg); }
+}
+
+.input, .textarea {
+  width: 100%;
+  font: inherit;
+  /* 16px EXACTLY: iOS Safari auto-zooms the page on focus for anything
+     smaller, and then leaves the layout zoomed with the tab bar off-screen. */
+  font-size: 16px;
+  min-height: 44px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+.textarea { resize: vertical; line-height: 1.5; }
+
+.input:focus-visible,
+.textarea:focus-visible,
+.btn:focus-visible,
+.chip:focus-visible,
+.tabbar__link:focus-visible,
+.tick-row:focus-visible,
+.link-btn:focus-visible {
+  outline: 2px solid var(--paprika);
+  outline-offset: 1px;
+}
+
+.muted { color: var(--text-muted); }
+.stack > * + * { margin-top: 12px; }
+.stack-sm > * + * { margin-top: 8px; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row--wrap { flex-wrap: wrap; }
+.spacer { flex: 1; }
+
+.section-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 4px 0;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--paprika);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 10px 0;
+  min-height: 44px;
+  text-align: left;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Status blocks ---- */
+.notice {
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.45;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.notice--error { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger); }
+.notice--warn { border-color: var(--warn-border); background: var(--warn-bg); color: var(--warn-text); }
+.notice--info { border-color: var(--info-border); background: var(--info-bg); color: var(--info-text); }
+
+.spinner {
+  display: inline-block;
+  width: 18px; height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--paprika);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: middle;
+  flex: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.badge--instagram { background: #fbe9f3; color: #a3286c; }
+.badge--tiktok { background: #e8f4f6; color: #1d6b78; }
+.badge--youtube { background: #fdeaea; color: #a52b2b; }
+.badge--web { background: var(--surface-2); color: var(--text-muted); }
+.badge--manual { background: var(--ok-bg); color: var(--herb); }
+@media (prefers-color-scheme: dark) {
+  .badge--instagram { background: #3b2130; color: #f0a5cd; }
+  .badge--tiktok { background: #17333a; color: #86d6e4; }
+  .badge--youtube { background: #3a2020; color: #f09b9b; }
+}
+
+/* ---- Sticky screen header (search, grocery add form) ----
+   `position: sticky` inside the scrolling pane rather than `fixed`: sticky
+   participates in layout, so it can't overlap the first card, and it needs no
+   compensating padding. */
+.sticky-head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  padding: 12px 16px 10px;
+  padding-left: max(16px, var(--safe-left));
+  padding-right: max(16px, var(--safe-right));
+  padding-top: max(12px, var(--safe-top));
+  border-bottom: 1px solid var(--border);
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.search-row { position: relative; display: flex; gap: 8px; }
+.search-row .input { padding-left: 38px; }
+.search-icon {
+  position: absolute;
+  left: 11px; top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+  display: flex;
+}
+.search-clear {
+  position: absolute;
+  right: 2px; top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  width: 44px; height: 44px;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+/* Horizontally scrolling filter chips. `scrollbar-width: none` because a
+   visible scrollbar on a 3-chip row looks broken; the overflow is discoverable
+   by dragging, which is the native idiom on a phone. */
+.chip-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding-bottom: 2px;
+}
+.chip-row::-webkit-scrollbar { display: none; }
+
+.chip {
+  appearance: none;
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  /* 36px, not 44px, and this is the one deliberate exception: chips sit in a
+     row of their own with 8px gutters and nothing tappable above or below, so
+     the *effective* target including slop is comfortably over 44px. Keeping
+     them shorter is what leaves the first recipe card above the fold. */
+  min-height: 36px;
+  padding: 6px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.chip[aria-pressed="true"] {
+  background: var(--paprika);
+  border-color: var(--paprika);
+  color: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  .chip[aria-pressed="true"] { color: #1a1410; }
+}
+.chip__count { opacity: 0.7; font-weight: 600; }
+
+/* ---- Recipe list ---- */
+.recipe-list { display: flex; flex-direction: column; gap: 10px; }
+
+/* CONCEPT — WHY THE CARD IS A DIV WITH A LINK INSIDE, NOT A GIANT <a>.
+   The card holds two actions: "open the recipe" and "favourite it". Nesting a
+   <button> inside an <a> is invalid HTML and behaves unpredictably. So the
+   anchor covers the content area only, and the star is a sibling laid over the
+   corner. No event.stopPropagation() gymnastics needed — the two targets never
+   overlap in the first place. */
+.recipe-card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.recipe-card__link {
+  display: flex;
+  gap: 12px;
+  padding: 10px;
+  align-items: center;
+  min-height: 84px;
+}
+.recipe-card:active { background: var(--surface-2); }
+.recipe-card__thumb {
+  flex: none;
+  width: 76px; height: 76px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--surface-2);
+  display: block;
+}
+.recipe-card__body { flex: 1; min-width: 0; padding-right: 40px; }
+.recipe-card__title {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+  /* Two lines then ellipsis: titles from captions can be a paragraph. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.recipe-card__meta {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recipe-card__tags { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+
+.fav-btn {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 44px; height: 44px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+.fav-btn[aria-pressed="true"] { color: var(--gold); }
+.fav-btn:active { background: var(--press); }
+/* Static position variant for the cook view's action row. */
+.fav-btn--inline { position: static; transform: none; }
+
+/* The generated placeholder for the (many) recipes with no hero image. */
+.monogram {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  border-radius: 10px;
+  width: 76px; height: 76px;
+  font-size: 26px;
+  user-select: none;
+}
+.monogram--hero { width: 100%; height: 100%; border-radius: 0; font-size: 64px; }
+
+/* ---- Empty / loading / error states ---- */
+.empty {
+  text-align: center;
+  padding: 28px 18px 32px;
+  color: var(--text-muted);
+}
+.empty__mark { font-size: 40px; line-height: 1; }
+.empty__title { margin-top: 12px; font-size: 18px; font-weight: 700; color: var(--text); }
+.empty__body { margin-top: 8px; font-size: 15px; line-height: 1.5; }
+.empty__steps {
+  text-align: left;
+  margin: 16px auto 0;
+  max-width: 340px;
+  padding-left: 22px;
+  line-height: 1.6;
+  font-size: 15px;
+}
+
+/* Skeleton rows: a shape-of-the-answer placeholder rather than a spinner, so
+   the layout doesn't jump when the data lands. */
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2), var(--border), var(--surface-2));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+  border-radius: 8px;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+.skeleton-card { height: 96px; border-radius: var(--radius); }
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+  .spinner { animation-duration: 2s; }
+}
+
+/* ---- Cook view ----
+   Its own fixed frame inside the shell: hero + head stay put, one pane scrolls,
+   the action bar is pinned. Success criterion S3 ("no page scroll needed to see
+   the ingredient list on an iPhone 11") is why the hero is capped in `vh` and
+   why ingredients/steps are a segmented control rather than one long column. */
+.cook {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.cook__hero {
+  position: relative;
+  flex: none;
+  height: 22vh;
+  min-height: 130px;
+  max-height: 220px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.cook__hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* A scrim so the back button and title chip stay legible over any photo. */
+.cook__hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0) 45%);
+  pointer-events: none;
+}
+.cook__back {
+  position: absolute;
+  z-index: 2;
+  left: calc(10px + var(--safe-left));
+  top: calc(10px + var(--safe-top));
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(20, 16, 12, 0.55);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+
+.cook__head {
+  flex: none;
+  padding: 12px 16px 8px;
+  padding-left: max(16px, var(--safe-left));
+  padding-right: max(16px, var(--safe-right));
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.cook__title { font-size: 21px; font-weight: 800; line-height: 1.2; }
+.cook__meta { margin-top: 5px; font-size: 13.5px; color: var(--text-muted); }
+.cook__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--paprika);
+  min-height: 32px;
+}
+
+/* Servings scaler */
+.scaler {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.scaler__btn {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.scaler__btn:active { background: var(--press); }
+.scaler__btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.scaler__val { min-width: 74px; text-align: center; }
+.scaler__num { font-size: 19px; font-weight: 800; line-height: 1.1; }
+.scaler__unit { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+/* "scaled from 4" — shown whenever the factor ≠ 1, so the numbers on screen are
+   never mistaken for the ones in the original caption. */
+.scaler__note {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--paprika);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 5px 10px;
+}
+.scaler__reset { margin-left: auto; }
+
+/* Segmented control (Ingredients | Steps | Notes) */
+.segmented {
+  display: flex;
+  gap: 4px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 4px;
+  margin-top: 12px;
+}
+.segmented__btn {
+  flex: 1;
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  min-height: 40px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.segmented__btn[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+}
+
+.cook__panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 16px 14px;
+  padding-left: max(16px, var(--safe-left));
+  padding-right: max(16px, var(--safe-right));
+}
+
+/* A tickable row — used for both ingredients and steps. A <button>, not a
+   <div onClick>: it gets keyboard activation, focus and a role for free.
+   `aria-pressed` carries the state to a screen reader; the strike-through
+   alone would be silent. */
+.tick-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  align-items: flex-start;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  font: inherit;
+  /* Generously tall: this is tapped with a knuckle, mid-chop. */
+  min-height: 52px;
+  padding: 12px 4px;
+  cursor: pointer;
+}
+.tick-row:active { background: var(--press); }
+.tick-row:last-child { border-bottom: none; }
+
+.tick-box {
+  flex: none;
+  width: 24px; height: 24px;
+  border-radius: 7px;
+  border: 2px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  color: transparent;
+  margin-top: 1px;
+}
+.tick-row[aria-pressed="true"] .tick-box {
+  background: var(--herb);
+  border-color: var(--herb);
+  color: #fff;
+}
+.tick-row[aria-pressed="true"] .tick-text {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+.tick-text { font-size: 16.5px; line-height: 1.4; flex: 1; }
+.tick-text strong { font-weight: 700; }
+.tick-note { display: block; font-size: 13.5px; color: var(--text-muted); margin-top: 2px; }
+
+/* Steps */
+.step-row { align-items: flex-start; }
+.step-num {
+  flex: none;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  margin-top: 1px;
+}
+.step-row[aria-pressed="true"] .step-num { background: var(--herb); color: #fff; }
+/* The current step is the one thing you look for from two feet away. */
+.step-row--current {
+  background: var(--surface);
+  border: 1px solid var(--paprika);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  margin: 6px 0;
+  padding: 14px 12px;
+}
+.step-row--current .step-num { background: var(--paprika); color: #fff; }
+.step-row--current .tick-text { font-size: 18px; font-weight: 600; }
+
+/* Pinned action bar */
+.cook__actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  padding-left: max(16px, var(--safe-left));
+  padding-right: max(16px, var(--safe-right));
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 -1px 8px rgba(0,0,0,0.06);
+}
+.cook__actions .btn { flex: 1; }
+
+/* ---- Editor ---- */
+.field { display: block; }
+.field__label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+.field-grid { display: flex; gap: 10px; }
+.field-grid > * { flex: 1; min-width: 0; }
+
+.ed-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.ed-row__fields { flex: 1; min-width: 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.ed-row__fields .input { flex: 1 1 100%; }
+.ed-row__fields .input--qty { flex: 0 0 74px; }
+.ed-row__fields .input--unit { flex: 0 0 84px; }
+.ed-row__fields .input--item { flex: 1 1 120px; }
+.ed-row__btns { display: flex; flex-direction: column; gap: 2px; flex: none; }
+.ed-move {
+  width: 34px; height: 26px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.ed-move:disabled { opacity: 0.35; }
+
+/* ---- Add screen ---- */
+.paste-area { position: relative; }
+.paste-actions { display: flex; gap: 8px; margin-top: 10px; }
+.paste-actions .btn { flex: 1; }
+
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+  margin-top: 10px;
+}
+.progress-bar {
+  height: 100%;
+  background: var(--paprika);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.recent-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+  min-height: 52px;
+  font-size: 14px;
+}
+.recent-row:last-child { border-bottom: none; }
+.recent-row__url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+/* ---- Grocery ---- */
+.gro-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.gro-row:last-child { border-bottom: none; }
+.gro-row .tick-row { border-bottom: none; }
+.gro-src { display: block; font-size: 12.5px; color: var(--text-muted); margin-top: 2px; }
+.gro-del {
+  flex: none;
+  width: 44px; height: 44px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 50%;
+  font-size: 17px;
+}
+.gro-del:active { background: var(--press); }
+
+/* ---- Toast (optimistic-update rollback notice) ----
+   Anchored to the bottom above the tab bar: a failure the user can't see is
+   worse than no optimistic update at all, because the UI would silently lie. */
+.toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(76px + var(--safe-bottom));
+  z-index: 1500;
+  max-width: min(92vw, 420px);
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+  border-radius: 999px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+@media (min-width: 720px) {
+  .toast { bottom: 20px; }
+}
+
+/* ---- Modal confirm (delete) ---- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1600;
+  background: rgba(20, 14, 10, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal {
+  background: var(--surface);
+  border-radius: 16px;
+  padding: 20px;
+  width: 100%;
+  max-width: 340px;
+  box-shadow: var(--shadow);
+}
+
+/* Success variant of the toast (e.g. "Added 9 items to the grocery list"). */
+.toast--ok {
+  background: var(--ok-bg);
+  color: var(--herb);
+  border-color: var(--herb);
+}
+
+/* The little "screen staying awake" indicator in the cook view header. */
+.awake-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--herb);
+  background: var(--ok-bg);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+
+/* The editor's own scrolling body, so the Save/Cancel bar stays pinned exactly
+   like the cook view's action bar it replaces. */
+.editor { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.editor__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px 20px;
+  padding-left: max(16px, var(--safe-left));
+  padding-right: max(16px, var(--safe-right));
+}

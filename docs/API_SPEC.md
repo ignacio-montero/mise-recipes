@@ -113,6 +113,8 @@ Poll for progress. The PWA polls this every 1.5 s while a job is open.
 
 ### `GET /api/imports?status=&limit=20`
 Recent jobs, newest first. Powers the "Recent imports" strip on `/add`.
+Returns `{ jobs: ImportJobDTO[] }`. Jobs with `status: "done"` carry the full
+`recipe` inline, so the strip needs no N+1 follow-up calls.
 
 ## 3. Recipes
 
@@ -124,7 +126,7 @@ Recent jobs, newest first. Powers the "Recent imports" strip on `/add`.
 | `DELETE` | `/api/recipes/:id` | `204`. Cascades folder links; grocery items are kept but unlinked. |
 | `POST` | `/api/recipes/:id/cooked` | Increments `cookedCount`, stamps `lastCookedAt`. Returns `{ recipe }`. |
 | `PUT` | `/api/recipes/:id/folders` | Body `{ folderIds: string[] }` — replaces the set. Returns `{ recipe }`. |
-| `POST` | `/api/recipes` | Manual create. Body = any subset of the writable fields plus required `title`. `sourcePlatform` forced to `manual`. |
+| `POST` | `/api/recipes` | Manual create. Body = any subset of the writable fields plus required `title`. `sourcePlatform` is forced to `manual` and `sourceUrl`/`sourcePlatform` are **not accepted** — a link you want saved goes through `POST /api/imports`. |
 
 ## 4. Folders
 
@@ -141,7 +143,7 @@ Recent jobs, newest first. Powers the "Recent imports" strip on `/add`.
 |---|---|---|
 | `GET` | `/api/grocery` | `{ items: [{ id, text, checked, recipeId, recipeTitle, createdAt }] }`, unchecked first. |
 | `POST` | `/api/grocery` | `{ text }` → `201 { item }` |
-| `POST` | `/api/grocery/from-recipe/:id` | Body `{ scale?: number }`. Appends every ingredient as an item, formatted `"1 lb shrimp"`, scaled if `scale` given. Returns `{ added: number, items }`. **Merges duplicates** by normalised `item` text rather than adding a second line. |
+| `POST` | `/api/grocery/from-recipe/:id` | Body `{ scale?: number }`. Appends every ingredient as an item, formatted `"1 lb shrimp"`, scaled if `scale` given. Returns `{ added: number, items }` where **`items` is the whole refreshed list**, not just the new rows — merging mutates *existing* rows, so returning only additions would leave the client stale. **Merges duplicates** by normalised `item` text against **unchecked** items only (a checked item is already in the basket), and sums quantities only when the remainder after the number matches exactly (`1 lb` + `2 lb` → `3 lb`; never guesses unit conversions). |
 | `PATCH` | `/api/grocery/:id` | `{ text?, checked? }` |
 | `DELETE` | `/api/grocery/:id` | `204` |
 | `DELETE` | `/api/grocery?checked=true` | Clears all checked items. `{ deleted: n }` |
@@ -151,7 +153,7 @@ Recent jobs, newest first. Powers the "Recent imports" strip on `/add`.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/images/:file` | Serves a stored hero image from the volume. Next only serves static from `/public`, so images go through a route — same trick as Blue Plaques' `/api/uploads/[file]`. |
-| `GET` | `/api/health` | `{ ok: true, db: true, worker: { alive, lastTickAt, pending } }`. Used by the compose healthcheck. |
+| `GET` | `/api/health` | `{ ok: true, db: true, worker: { alive, lastTickAt, pending } }`. Used by the compose healthcheck. When the DB is unreachable it returns **500** with the standard error envelope plus `{ ok: false, db: false, worker }` as extras — the healthcheck only distinguishes 2xx from non-2xx, so 500 vs 503 is immaterial here. |
 
 ## 7. Telegram command surface (`mise-bot`)
 
@@ -168,7 +170,14 @@ silently. **Only one process may long-poll a bot token** (a second gets HTTP 409
 | a plain-text **reply** to a failed import message | Re-runs structuring with that text as the source (the manual-caption fallback, PRD F4). |
 | `/id` | Replies with the chat id (setup aid). |
 
-Outcome messages:
+Messages are sent with **`parse_mode: "HTML"`**, not Markdown. Telegram's legacy
+Markdown has no dependable escape mechanism, so a recipe called `Mum's *secret*
+pasta` or `Chicken_Tikka` makes the API return 400 and **the message is silently
+lost**. HTML has three characters to escape and round-trips reliably; rendering is
+identical. Escaping happens exactly once, at the render boundary, in
+`escapeHtml()` in `bot/format.ts`.
+
+Outcome messages (shown here in their rendered form):
 - `✅ *Crispy Shrimp Tacos*\n9 ingredients · 9 steps · 6-8 tacos\n<open link>`
 - `🤔 That didn't look like a recipe. Reply with the caption text and I'll try again.`
 - `⚠️ Instagram returned no caption. Reply with the caption text and I'll try again.`
