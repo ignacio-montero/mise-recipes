@@ -107,6 +107,14 @@ export const POST = handle(async (req: Request, ctx: Ctx) => {
         const pending = creates.find((c) => c.text === line || normaliseLine(c.text).endsWith(key));
         if (pending) pending.text = merged;
       }
+    } else {
+      // Same ITEM, different units ("2 cups flour" vs "300 g flour") or no
+      // quantity at all. We will not invent a conversion — but the earlier
+      // version simply did nothing here, which SILENTLY DROPPED the ingredient
+      // while still reporting success. A duplicate line on a shopping list is a
+      // cosmetic annoyance; a missing ingredient is a second trip to the shop.
+      // So: add it as its own line and let the human reconcile.
+      creates.push({ text: line, recipeId: recipe.id });
     }
   }
 

@@ -174,24 +174,49 @@ RULES:
 
 /** Never trust the model's shape, even with a schema: a wrong type here becomes
  *  a runtime crash three layers away in the cook view. */
+/** Per-field ceilings for model output. Generous enough never to touch a real
+ *  recipe; tight enough that nothing downstream has to defend itself. */
+const MAX_FIELD_CHARS = {
+  default: 1_000,
+  title: 200,
+  description: 2_000,
+  servings: 100,
+  notes: 4_000,
+  step: 1_000,
+  tag: 40,
+  ingredientItem: 200,
+  ingredientNote: 300,
+  quantity: 40,
+  unit: 40,
+} as const;
+
 function coerceParsed(raw: unknown): ParsedRecipe {
   const o = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
-  const str = (v: unknown): string | undefined => {
+  // ⚠️ Every string here is MODEL OUTPUT, i.e. untrusted input that happens to
+  // arrive from our own API call. With maxOutputTokens at 8192 a ~30 000-char
+  // title is reachable, and it silently breaks things far downstream: Telegram
+  // caps a message at 4096 chars, so editMessageText 400s, the sendMessage
+  // fallback 400s too, and the user's chat sits on "⏳ Importing…" forever even
+  // though the recipe saved fine. Cap at the boundary where the data enters the
+  // system, not at each of the places that later renders it.
+  const cap = (s: string, max: number): string =>
+    s.length <= max ? s : s.slice(0, max - 1).trimEnd() + "…";
+  const str = (v: unknown, max: number = MAX_FIELD_CHARS.default): string | undefined => {
     const s = typeof v === "string" ? v.trim() : "";
-    return s === "" ? undefined : s;
+    return s === "" ? undefined : cap(s, max);
   };
 
   const ingredients: Ingredient[] = Array.isArray(o.ingredients)
     ? o.ingredients
         .map((v): Ingredient | null => {
           const i = (typeof v === "object" && v !== null ? v : {}) as Record<string, unknown>;
-          const item = str(i.item);
+          const item = str(i.item, MAX_FIELD_CHARS.ingredientItem);
           if (!item) return null;
           return {
-            ...(str(i.quantity) ? { quantity: str(i.quantity) } : {}),
-            ...(str(i.unit) ? { unit: str(i.unit) } : {}),
+            ...(str(i.quantity, MAX_FIELD_CHARS.quantity) ? { quantity: str(i.quantity, MAX_FIELD_CHARS.quantity) } : {}),
+            ...(str(i.unit, MAX_FIELD_CHARS.unit) ? { unit: str(i.unit, MAX_FIELD_CHARS.unit) } : {}),
             item,
-            ...(str(i.note) ? { note: str(i.note) } : {}),
+            ...(str(i.note, MAX_FIELD_CHARS.ingredientNote) ? { note: str(i.note, MAX_FIELD_CHARS.ingredientNote) } : {}),
           };
         })
         .filter((i): i is Ingredient => i !== null)
@@ -200,7 +225,7 @@ function coerceParsed(raw: unknown): ParsedRecipe {
 
   const steps = Array.isArray(o.steps)
     ? o.steps
-        .map((s) => (typeof s === "string" ? s.replace(/^\s*\d+[.)]\s*/, "").trim() : ""))
+        .map((s) => (typeof s === "string" ? cap(s.replace(/^\s*\d+[.)]\s*/, "").trim(), MAX_FIELD_CHARS.step) : ""))
         .filter((s) => s.length > 0)
         .slice(0, 60)
     : [];
@@ -210,7 +235,7 @@ function coerceParsed(raw: unknown): ParsedRecipe {
         new Set(
           o.tags
             .map((t) => (typeof t === "string" ? t.trim().toLowerCase().replace(/^#/, "") : ""))
-            .filter((t) => t.length > 1 && t.length < 30),
+            .filter((t) => t.length > 1 && t.length < MAX_FIELD_CHARS.tag),
         ),
       ).slice(0, 5)
     : [];
@@ -231,14 +256,14 @@ function coerceParsed(raw: unknown): ParsedRecipe {
   return {
     isRecipe,
     confidence,
-    title: str(o.title) ?? "Untitled recipe",
-    description: str(o.description) ?? null,
-    servings: str(o.servings) ?? null,
+    title: str(o.title, MAX_FIELD_CHARS.title) ?? "Untitled recipe",
+    description: str(o.description, MAX_FIELD_CHARS.description) ?? null,
+    servings: str(o.servings, MAX_FIELD_CHARS.servings) ?? null,
     totalMinutes: minutes,
     ingredients,
     steps,
     tags,
-    notes: str(o.notes) ?? null,
+    notes: str(o.notes, MAX_FIELD_CHARS.notes) ?? null,
   };
 }
 

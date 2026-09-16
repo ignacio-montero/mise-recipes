@@ -167,12 +167,68 @@ function safeCodePoint(n: number): string {
 }
 
 const BLOCK_CLOSERS = /<\/(?:p|div|li|tr|h[1-6]|section|article|ul|ol|blockquote)\s*>/gi;
-const DROPPED_ELEMENTS = /<(script|style|noscript|svg|iframe|template|form|nav|footer|header|aside)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+
+/** Elements whose CONTENT is not readable text and must be dropped wholesale. */
+const DROPPED_TAGS = [
+  "script", "style", "noscript", "svg", "iframe",
+  "template", "form", "nav", "footer", "header", "aside",
+];
+const DROPPED_OPEN = new RegExp(`<(${DROPPED_TAGS.join("|")})\\b[^>]*>`, "gi");
+
+/**
+ * Only this much markup is ever scanned for readable text.
+ *
+ * The caller already truncates the extracted text to 20 000 chars, so scanning
+ * a 3 MB page did ~93% of its work purely to throw the result away. Capping the
+ * INPUT is also the cheap half of the ReDoS defence below.
+ */
+const MAX_TEXT_SCAN_BYTES = 300_000;
+
+/**
+ * Drop `<script>…</script>` and friends WITHOUT a backreference.
+ *
+ * ⚠️ The obvious regex — `/<(script|style|…)\b[^>]*>[\s\S]*?<\/\1\s*>/gi` — is a
+ * **ReDoS**. The lazy `[\s\S]*?` combined with the `\1` backreference means every
+ * UNCLOSED opening tag rescans to end-of-string hunting for its closer, which is
+ * O(n²). Measured on a 3 MB input (the old ceiling): 8.4 s for 20k tags, **79 s**
+ * for 375k unclosed `<script>`, **116 s** for unclosed `<aside>` — on a fast Mac.
+ * The N95 is several times slower.
+ *
+ * That is not a slow function, it is an OUTAGE. `String.replace` is synchronous
+ * on the only thread, so while it runs no request is served, `/api/health` cannot
+ * answer (so the container is marked unhealthy), and the pipeline's own
+ * AbortController timeouts cannot fire — timers need a free event loop.
+ *
+ * This version is a single linear scan: find each opening tag, then `indexOf` its
+ * closer. No backtracking is possible. An unclosed tag drops the remainder of the
+ * document, which is the right call for markup that is already broken.
+ */
+export function dropNonTextElements(html: string): string {
+  const lower = html.toLowerCase();
+  let out = "";
+  let cursor = 0;
+  DROPPED_OPEN.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DROPPED_OPEN.exec(html)) !== null) {
+    if (m.index < cursor) continue; // inside a region already dropped
+    const tag = m[1].toLowerCase();
+    const close = lower.indexOf(`</${tag}`, m.index + m[0].length);
+    out += html.slice(cursor, m.index) + " ";
+    if (close === -1) {
+      cursor = html.length; // unclosed: treat the rest as inside it
+      break;
+    }
+    const end = html.indexOf(">", close);
+    cursor = end === -1 ? html.length : end + 1;
+    DROPPED_OPEN.lastIndex = cursor;
+  }
+  return out + html.slice(cursor);
+}
 
 /** Markup → the text a human would read. Approximate by design (see header). */
 export function htmlToText(html: string): string {
-  const text = html
-    .replace(DROPPED_ELEMENTS, " ")
+  const capped = html.length > MAX_TEXT_SCAN_BYTES ? html.slice(0, MAX_TEXT_SCAN_BYTES) : html;
+  const text = dropNonTextElements(capped)
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(BLOCK_CLOSERS, "\n")

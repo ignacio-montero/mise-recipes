@@ -20,6 +20,7 @@
 //     attempt 2 never touches Instagram again.
 
 import { config } from "./config";
+import { canonicalUrl } from "./canonicalUrl";
 import { prisma } from "./prisma";
 import { parseServingsCount } from "./scale";
 import { ExtractionError } from "./extract/classify";
@@ -148,12 +149,40 @@ function schedule(delayMs: number): void {
  * overlapping ticks. This way the next tick is only ever scheduled once the
  * previous one has finished.
  */
+/**
+ * Claiming a job by flipping `status` to "running" is a LEASE — and a lease with
+ * no expiry is a bug waiting to happen.
+ *
+ * `bootstrap()` requeues `running` rows at startup, which covers "the process
+ * died". It does NOT cover "the process is alive and dropped the ball": if the
+ * write inside `handleFailure` itself throws (SQLITE_BUSY, disk full), the
+ * exception unwinds past it and the row stays "running" forever. That URL then
+ * becomes permanently un-importable, because POST /api/imports treats a running
+ * job as in-flight and hands back the dead id.
+ *
+ * Real queues solve this with a visibility timeout; this is the same idea. A job
+ * that has not been touched in STALE_LEASE_MS is presumed abandoned and requeued
+ * — safe because `attempts` was already incremented when it was claimed, so a
+ * genuinely poisonous job still gives up after maxAttempts rather than looping.
+ */
+const STALE_LEASE_MS = 15 * 60 * 1000;
+
+async function reclaimStaleLeases(): Promise<void> {
+  const cutoff = new Date(Date.now() - STALE_LEASE_MS);
+  const { count } = await prisma.importJob.updateMany({
+    where: { status: "running", updatedAt: { lt: cutoff } },
+    data: { status: "pending", stage: null },
+  });
+  if (count > 0) console.warn(`[worker] reclaimed ${count} stale running job(s)`);
+}
+
 async function tick(): Promise<void> {
   if (state.ticking) return;
   state.ticking = true;
   let didWork = false;
   try {
     state.lastTickAt = new Date();
+    await reclaimStaleLeases();
     state.pending = await prisma.importJob.count({ where: { status: "pending" } });
 
     // Take a few candidates, not one: the oldest pending job may be cooling off
@@ -328,13 +357,19 @@ async function saveRecipe(
   gathered: Gathered,
   parsed: ParsedRecipe,
 ): Promise<string> {
-  // `sourceUrl` is the dedupe key and it is UNIQUE, so the stored spelling must
-  // be the one `POST /api/imports` normalises to — otherwise the route's
-  // "already saved?" check misses and we grow duplicates the constraint cannot
-  // catch. The resolved canonical URL is still checked, so a vm.tiktok.com short
-  // link and the full URL it redirects to collapse to one recipe too.
+  // `sourceUrl` is the dedupe key and it is UNIQUE, so it must be the post's
+  // IDENTITY, not whatever spelling the user happened to share. Those differ:
+  // the iOS share sheet emits `instagram.com/share/<per-share-token>` and
+  // `vm.tiktok.com/<short>`, which are PROVENANCE — a different token every
+  // time, so storing them means the same reel saves twice.
+  //
+  // The worker is the first place the real identity is known (it resolved the
+  // redirect), so it is the right place to decide the key. Enqueue-time dedupe
+  // in the route stays best-effort; THIS is the authoritative check, backed by
+  // the UNIQUE index and the P2002 catch below.
+  const identity = canonicalUrl(gathered.canonicalUrl) ?? canonicalUrl(jobUrl) ?? jobUrl;
   const existing = await prisma.recipe.findFirst({
-    where: { OR: [{ sourceUrl: jobUrl }, { sourceUrl: gathered.canonicalUrl }] },
+    where: { OR: [{ sourceUrl: identity }, { sourceUrl: jobUrl }] },
     select: { id: true },
   });
   if (existing) {
@@ -350,7 +385,7 @@ async function saveRecipe(
       data: {
         title: parsed.title.trim() || "Untitled recipe",
         description: parsed.description ?? null,
-        sourceUrl: jobUrl,
+        sourceUrl: identity,
         sourcePlatform: gathered.platform,
         sourceAuthor: gathered.author,
         heroImagePath,

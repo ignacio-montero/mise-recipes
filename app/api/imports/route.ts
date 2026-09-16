@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { config } from "@/lib/config";
+import { canonicalUrl } from "@/lib/canonicalUrl";
 import { ApiError, handle, requireString } from "@/lib/http";
 import { recipeInclude, toRecipeDTO } from "@/lib/serialize";
 import { assertAllowedKeys, readJson } from "../_lib/json";
@@ -26,48 +27,14 @@ const VALID_STATUSES = ["pending", "running", "done", "failed", "not_recipe"];
 /** Query junk that never identifies content. `igshid` is the one that actually
  *  bites: Instagram's share sheet stamps a fresh one on every share, so the same
  *  reel arrives with a different URL each time. */
-const TRACKING_PARAM = /^(utm_|igsh|fbclid$|gclid$|mc_[ce]id$|si$|ref$|ref_src$|_branch|share_app_id$|is_from_webapp$|sender_device$|web_id$|feature$)/i;
 
-/** Hosts where the content id lives in the path, so the whole query string is
- *  disposable — except YouTube, where `?v=` IS the identity. */
-const PATH_IDENTIFIED = ["instagram.com", "tiktok.com", "facebook.com", "pinterest.com"];
-const KEEP_PARAMS: Record<string, string[]> = { "youtube.com": ["v"] };
-
-// NOT exported: Next type-checks route.ts and rejects any export that is not a
-// route handler or a route segment config. Tested through POST /api/imports.
+// Canonicalisation lives in lib/canonicalUrl.ts because the WORKER must derive
+// the same key when it stores the recipe — see the warning at the top of that
+// file. Do not reintroduce a second normaliser here.
 function normaliseUrl(raw: string): string {
-  let u: URL;
-  try {
-    u = new URL(raw.trim());
-  } catch {
-    throw new ApiError("bad_request", "`url` must be an absolute http(s) URL.");
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:") {
-    throw new ApiError("bad_request", "`url` must be an http(s) URL.");
-  }
-  // `www.`/`m.` are the same site; folding them means the phone's mobile link and
-  // the desktop link dedupe against each other. Both variants redirect in
-  // practice, so the stored URL stays fetchable.
-  const host = u.hostname.toLowerCase().replace(/^(www|m|mobile)\./, "");
-
-  const params = new URLSearchParams();
-  const keep = KEEP_PARAMS[host];
-  if (keep) {
-    for (const k of keep) {
-      const v = u.searchParams.get(k);
-      if (v) params.set(k, v);
-    }
-  } else if (!PATH_IDENTIFIED.some((h) => host === h || host.endsWith(`.${h}`))) {
-    // Unknown host: a recipe site may genuinely need `?p=123`, so strip only the
-    // known tracking params instead of the whole query.
-    for (const [k, v] of [...u.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      if (!TRACKING_PARAM.test(k)) params.append(k, v);
-    }
-  }
-
-  const path = u.pathname.replace(/\/+$/, "");
-  const qs = params.toString();
-  return `${u.protocol}//${host}${path}${qs ? `?${qs}` : ""}`; // fragment always dropped
+  const u = canonicalUrl(raw);
+  if (!u) throw new ApiError("bad_request", "`url` must be an absolute http(s) URL.");
+  return u;
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -84,17 +51,47 @@ function tokenMatches(presented: string, expected: string): boolean {
   return crypto.timingSafeEqual(a, b);
 }
 
-function assertTelegramAuthorised(req: Request): void {
-  // Fail CLOSED: an unset OSTA_INGEST_TOKEN must mean "nobody may enqueue from
-  // off-page", never "everybody may". A misconfigured deploy that silently
-  // disables its own auth is how open relays happen.
-  if (!config.ingestToken) {
-    throw new ApiError("unauthorized", "Ingest token is not configured on the server.");
+/**
+ * May this caller enqueue an import?
+ *
+ * Fails CLOSED: a request that proves nothing is refused. Note the token branch
+ * is checked first and independently of `source`, so a caller cannot dodge it by
+ * relabelling itself.
+ */
+function assertMayEnqueue(req: Request, source: string): void {
+  // An unset OSTA_INGEST_TOKEN must never mean "everyone is authorised" — that
+  // is how open relays are born — so an empty expected value matches nothing.
+  const expected = config.ingestToken;
+  const presented = req.headers.get("x-mise-token");
+  if (expected && presented && tokenMatches(presented, expected)) return;
+
+  // A browser sets these; page JavaScript cannot forge them. Every browser of
+  // the last several years sends `Origin` on a same-origin POST, and modern ones
+  // also send `Sec-Fetch-Site` — so requiring ONE of them costs real clients
+  // nothing.
+  //
+  // ⚠️ Do NOT add a "neither header present, so assume an old browser" branch.
+  // That was tried, and it reopened the hole it was meant to close: a bare
+  // `curl` sends neither, so the fallback authorised exactly the caller the
+  // check exists to stop. Absence of evidence is not evidence of a browser.
+  const fetchSite = req.headers.get("sec-fetch-site");
+  if (fetchSite === "same-origin" || fetchSite === "none") return;
+
+  const origin = req.headers.get("origin");
+  if (origin) {
+    try {
+      if (new URL(origin).host === req.headers.get("host")) return;
+    } catch {
+      /* malformed Origin — fall through to the refusal */
+    }
   }
-  const presented = req.headers.get("x-mise-token") ?? "";
-  if (!tokenMatches(presented, config.ingestToken)) {
-    throw new ApiError("unauthorized", "Bad or missing x-mise-token.");
-  }
+
+  throw new ApiError(
+    "unauthorized",
+    source === "telegram"
+      ? "Missing or invalid x-mise-token."
+      : "Imports must come from the Mise app or carry a valid x-mise-token.",
+  );
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -107,9 +104,18 @@ export const POST = handle(async (req: Request) => {
   if (source !== "web" && source !== "telegram") {
     throw new ApiError("bad_request", "`source` must be \"web\" or \"telegram\".");
   }
-  // The web app is same-origin behind Tailscale (docs/ARCHITECTURE.md §5); the
-  // bot talks over the Docker network and must prove who it is.
-  if (source === "telegram") assertTelegramAuthorised(req);
+  // ⚠️ `source` is a LABEL THE CALLER CHOSE, never a credential. An earlier
+  // version only checked the token when source==="telegram", which meant
+  // omitting the field skipped the check entirely — authorisation decided by the
+  // request's own say-so. Authenticate FIRST, then derive what the caller may do.
+  //
+  // Two ways in, both proved rather than asserted:
+  //   • the ingest token  — how the bot (and any script) identifies itself;
+  //   • a same-origin request — how the PWA identifies itself, since a browser
+  //     sets Sec-Fetch-Site/Origin itself and page JS cannot forge them.
+  // Everything else is refused, so a stray request on the Docker network or a
+  // link someone opens on the tailnet cannot enqueue work.
+  assertMayEnqueue(req, source);
 
   const rawUrl = requireString(body.url, "url");
   const url = normaliseUrl(rawUrl);
