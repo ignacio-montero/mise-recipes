@@ -33,7 +33,8 @@ Two surfaces:
 
 ```bash
 npm install
-cp .env.example .env          # fill in GEMINI_API_KEY at minimum
+cp .env.example .env          # DATABASE_URL is the minimum; GEMINI_API_KEY to import
+npm run icons                 # regenerates public/icons/* with sharp
 DATABASE_URL="file:./prisma/dev.db" npx prisma db push
 npm run dev                   # http://localhost:3000
 npm test                      # vitest
@@ -73,12 +74,54 @@ polls that table. The job queue *is* the database table.
   `toRecipeDTO`/`recipeInclude` in `lib/serialize.ts`; never hand a raw Prisma
   row to the client.
 - **Next.js 15: route params are a Promise.** `const { id } = await params`.
+  `searchParams` too — see `app/recipe/[id]/page.tsx`.
+- **`npm start` does NOT work with `output: "standalone"`.** It prints a warning
+  and then serves a half-broken app that 500s on API routes. To smoke-test a
+  production build locally, run `node .next/standalone/server.js` (after copying
+  `.next/static` and `public/` beside it), or just use `npm run dev`.
+- **Don't run `next dev` and `next build` in the same checkout at once.** They
+  share `.next`, and the dev server rewriting it mid-build makes `next build`
+  die at "Collecting build traces" with a bogus ENOENT on a `.nft.json`. The
+  build is fine; re-run it once the dev server is stopped.
+- **Clipboard needs a secure context.** `navigator.clipboard` is `undefined`
+  over plain `http://`, which is how the app is reached on the tailnet — so the
+  "Paste" button on `/add` has a designed fallback, not an assumed happy path.
+  See `components/AddView.tsx`.
 - **Temp files.** Downloaded audio lives under `DATA_DIR/tmp` and must be deleted
   in a `finally`; the entrypoint also sweeps it on boot. The SSD is 232 GB and
   shared with every other homelab service.
 - **URLs from Telegram are untrusted.** They are host-allowlisted before any
   fetch or subprocess, and passed to `execFile` as an argument array — never
   interpolated into a shell string.
+
+- **⚠️ `instrumentation.ts` must use a positive `if`, never an early `return`.**
+  `if (NEXT_RUNTIME !== "nodejs") return;` followed by dynamic imports **kills the
+  dev server** with `UnhandledSchemeError: Reading from "node:child_process"`.
+  Webpack folds constant *conditions* but does not do control-flow reachability,
+  so the imports stay in the **edge** bundle. Wrapping them in
+  `if (process.env.NEXT_RUNTIME === "nodejs") { … }` makes the whole block
+  `if (false)` and it is pruned, imports and all.
+- **⚠️ Worker state must live on `globalThis`, or `/api/health` lies.** Next
+  compiles `instrumentation.ts` and the API routes into **separate bundles**, each
+  with its own instance of the same module — so module-scope `let`s made health
+  report `alive: false` while the loop was happily running. Same reason
+  `lib/prisma.ts` pins its client to a global.
+- **⚠️ A relative Prisma `file:` URL resolves against `prisma/schema.prisma`, not the
+  project root.** `DATABASE_URL="file:./prisma/dev.db"` silently creates
+  `prisma/prisma/dev.db` and leaves you querying an empty database. Local dev uses
+  `file:./dev.db`; the container uses an absolute path, which is unambiguous.
+- **⚠️ `npm start` does not work with `output: "standalone"`** — it warns, then 500s
+  every API route. Run `node .next/standalone/server.js` (after copying
+  `.next/static` and `public/` into the standalone dir).
+- **⚠️ Never run `next dev` and `next build` against the same checkout at once.** The
+  dev watcher rewrites `.next` under the build, which surfaces as a nonsense
+  `ENOENT … .nft.json` or `Cannot find module for page: /_not-found` at
+  "Collecting build traces". Kill stray `next-server` processes first
+  (`ps aux | grep next-server`); a backgrounded dev server outlives the shell
+  that started it.
+- **zsh `echo` interprets `\n`.** Piping a curl'd JSON body through `echo "$VAR"`
+  corrupts it into invalid JSON. Use `printf '%s'` or pipe curl straight into node.
+  This is a debugging trap, not an app bug — it cost a confusing five minutes.
 
 ## Deployment
 

@@ -56,36 +56,55 @@ type WorkerStatus = { alive: boolean; lastTickAt: string | null; pending: number
 // Module-level singletons. Next's dev server re-evaluates modules on edit, so
 // `startWorker()` is idempotent and `stopWorker()` exists to make that testable.
 
-let started = false;
-let timer: NodeJS.Timeout | null = null;
-let ticking = false;
-let lastTickAt: Date | null = null;
-/** Last observed count, refreshed every tick. `workerStatus()` is called from a
- *  route handler that must answer synchronously, so it reads the cache rather
- *  than issuing its own query on every healthcheck. */
-let pendingCount = 0;
-/** jobId → epoch ms before which this job must not be retried. */
-const cooldowns = new Map<string, number>();
+type LoopState = {
+  started: boolean;
+  timer: NodeJS.Timeout | null;
+  ticking: boolean;
+  lastTickAt: Date | null;
+  /** Last observed pending count, refreshed every tick. `workerStatus()` is
+   *  called from a route handler that must answer synchronously, so it reads
+   *  this cache rather than querying the DB on every healthcheck. */
+  pending: number;
+  /** jobId → epoch ms before which this job must not be retried. */
+  cooldowns: Map<string, number>;
+};
+
+// Pinned to globalThis for the reason lib/prisma.ts pins its client, plus one
+// specific to this file: Next compiles `instrumentation.ts` and the API routes
+// into SEPARATE bundles, each with its own instance of this module. Plain module
+// scope would give `startWorker()` (instrumentation) and `workerStatus()`
+// (/api/health) different variables — health would report `alive: false` while
+// the loop was happily running. A global is the one thing both copies share, and
+// it also makes the "exactly one loop" guarantee survive a dev hot reload.
+const globalForWorker = globalThis as unknown as { __miseWorker?: LoopState };
+const state: LoopState = (globalForWorker.__miseWorker ??= {
+  started: false,
+  timer: null,
+  ticking: false,
+  lastTickAt: null,
+  pending: 0,
+  cooldowns: new Map<string, number>(),
+});
 
 export function workerStatus(): WorkerStatus {
   return {
-    alive: started,
-    lastTickAt: lastTickAt ? lastTickAt.toISOString() : null,
-    pending: pendingCount,
+    alive: state.started,
+    lastTickAt: state.lastTickAt ? state.lastTickAt.toISOString() : null,
+    pending: state.pending,
   };
 }
 
 export function startWorker(): void {
-  if (started) return; // idempotent: instrumentation.ts may register twice in dev
-  started = true;
+  if (state.started) return; // idempotent: instrumentation.ts may register twice in dev
+  state.started = true;
   console.log(`[worker] starting (poll ${config.worker.pollMs}ms, max ${config.worker.maxAttempts} attempts)`);
   void bootstrap().finally(() => schedule(0));
 }
 
 export function stopWorker(): void {
-  started = false;
-  if (timer) clearTimeout(timer);
-  timer = null;
+  state.started = false;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = null;
 }
 
 /** Crash recovery, run once before the first tick. */
@@ -114,13 +133,13 @@ async function bootstrap(): Promise<void> {
 }
 
 function schedule(delayMs: number): void {
-  if (!started) return;
-  timer = setTimeout(() => {
+  if (!state.started) return;
+  state.timer = setTimeout(() => {
     void tick();
   }, delayMs);
   // Do not hold the event loop open on our account. The Next server keeps the
   // process alive; a test or a script should be able to exit without stopWorker().
-  timer.unref?.();
+  state.timer.unref?.();
 }
 
 /**
@@ -130,12 +149,12 @@ function schedule(delayMs: number): void {
  * previous one has finished.
  */
 async function tick(): Promise<void> {
-  if (ticking) return;
-  ticking = true;
+  if (state.ticking) return;
+  state.ticking = true;
   let didWork = false;
   try {
-    lastTickAt = new Date();
-    pendingCount = await prisma.importJob.count({ where: { status: "pending" } });
+    state.lastTickAt = new Date();
+    state.pending = await prisma.importJob.count({ where: { status: "pending" } });
 
     // Take a few candidates, not one: the oldest pending job may be cooling off
     // after a failed attempt, and letting it block everything behind it is
@@ -146,7 +165,7 @@ async function tick(): Promise<void> {
       take: 5,
     });
     const now = Date.now();
-    const next = candidates.find((j) => (cooldowns.get(j.id) ?? 0) <= now);
+    const next = candidates.find((j) => (state.cooldowns.get(j.id) ?? 0) <= now);
     if (next) {
       didWork = true;
       await runJob(next.id);
@@ -156,7 +175,7 @@ async function tick(): Promise<void> {
     // including the database being momentarily unreadable.
     console.error("[worker] tick failed", e);
   } finally {
-    ticking = false;
+    state.ticking = false;
     // Drain quickly when there is a queue; idle politely when there is not.
     schedule(didWork ? 50 : config.worker.pollMs);
   }
@@ -206,6 +225,21 @@ async function runJob(id: string): Promise<void> {
   };
 
   try {
+    // Cheapest possible outcome first. `POST /api/imports` already refuses a URL
+    // we have saved, but a job enqueued BEFORE that recipe existed (two shares
+    // racing, or a queue that built up while the worker was down) would
+    // otherwise re-run the whole pipeline and pay for a model call to rediscover
+    // a row we already have.
+    const already = await prisma.recipe.findFirst({
+      where: { sourceUrl: job.url },
+      select: { id: true },
+    });
+    if (already) {
+      await finish(job.id, { status: "done", recipeId: already.id, error: null });
+      console.log(`[worker] ${job.id} already imported → recipe ${already.id}`);
+      return;
+    }
+
     // Priority: what the user pasted, then what we already gathered, then the
     // network. The second case is why a retry is free — attempt 2 of a Gemini
     // outage must not re-scrape Instagram (and risk a rate limit) to re-learn
@@ -248,7 +282,7 @@ async function finish(
   id: string,
   data: { status: string; recipeId?: string | null; error: string | null },
 ): Promise<void> {
-  cooldowns.delete(id);
+  state.cooldowns.delete(id);
   await prisma.importJob.update({ where: { id }, data: { ...data, stage: null } });
 }
 
@@ -270,7 +304,7 @@ async function handleFailure(job: ClaimedJob, e: unknown): Promise<void> {
   // Back to `pending` — the row is the retry queue. The cooldown lives in
   // memory; the durable part (status, attempts, rawText) is in the row.
   const backoff = RETRY_BACKOFF_MS[Math.min(job.attempts - 1, RETRY_BACKOFF_MS.length - 1)];
-  cooldowns.set(job.id, Date.now() + backoff);
+  state.cooldowns.set(job.id, Date.now() + backoff);
   await prisma.importJob.update({
     where: { id: job.id },
     // The error is kept visible while it retries: "Instagram returned no
