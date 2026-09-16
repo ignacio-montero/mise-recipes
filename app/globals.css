@@ -1020,3 +1020,188 @@ button { font-family: inherit; }
   padding-left: max(16px, var(--safe-left));
   padding-right: max(16px, var(--safe-right));
 }
+
+/* ---- Toast with an action ("Cooked 3×. Nice." + Undo) ----
+   The toast used to be a single centred string; with a button in it, it becomes
+   a flex row. `text-align: center` still applies to the message on its own line
+   when there is no action, so the existing toasts look exactly as they did. */
+.toast { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.toast__text { flex: 0 1 auto; }
+.toast__action {
+  appearance: none;
+  flex: none;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  /* -8px vertical margin: the tap target is the full 44px tall, but it does not
+     make the toast 44px tall. The hit area overhangs the pill, which is fine —
+     nothing else is tappable up there. */
+  min-height: 44px;
+  margin: -8px -6px -8px 0;
+  padding: 0 8px;
+}
+
+/* ---- Bottom sheet (folder picker / folder manager) ----
+   Reuses .modal-backdrop; only the alignment and the panel change. A sheet
+   grows from the bottom edge so its rows land under the thumb — the same
+   argument that put the tab bar at the bottom. */
+.modal-backdrop--sheet { align-items: flex-end; padding: 0; }
+.sheet {
+  background: var(--surface);
+  width: 100%;
+  max-width: 560px;
+  /* 88dvh, not 100%: the strip of backdrop left showing is what tells you the
+     page is still behind the sheet and a tap up there dismisses it.
+     `dvh` rather than `vh` because iOS Safari's `vh` includes the URL bar that
+     is not actually there — the same reason the app frame is 100dvh. */
+  max-height: 88dvh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px 18px 0 0;
+  box-shadow: var(--shadow);
+  padding-bottom: var(--safe-bottom);
+}
+.sheet:focus { outline: none; }
+.sheet__head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+/* The iOS "you can drag this" affordance. Decorative: dragging to dismiss is
+   not implemented (it needs pointer-event bookkeeping and an escape hatch for
+   scrolled content), so this is a shape people recognise, not a promise. */
+.sheet__grip {
+  position: absolute;
+  top: 6px; left: 50%;
+  transform: translateX(-50%);
+  width: 38px; height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+}
+.sheet__title { flex: 1; font-size: 17px; font-weight: 800; margin: 0; }
+.sheet__close { flex: none; font-size: 17px; }
+.sheet__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Momentum scrolling inside the sheet without the page behind it scrolling
+     too. `overscroll-behavior: contain` is the one-line fix for "scroll chaining",
+     where reaching the end of an inner scroller hands the gesture to the page. */
+  overscroll-behavior: contain;
+  padding: 14px 16px 18px;
+  padding-left: max(16px, var(--safe-left));
+  padding-right: max(16px, var(--safe-right));
+}
+.sheet__foot {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+  padding-left: max(16px, var(--safe-left));
+  padding-right: max(16px, var(--safe-right));
+  background: var(--surface);
+}
+
+/* ---- Folder picker rows ---- */
+.folder-pick {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+.folder-pick .tick-row { padding-left: 12px; padding-right: 12px; }
+
+/* ---- New-folder form (shared by both sheets) ---- */
+.folder-new-wrap { margin-top: 18px; }
+.folder-new-wrap--top { margin-top: 0; margin-bottom: 18px; }
+.folder-new { margin-top: 8px; }
+.folder-new__hint { margin: 8px 0 0; font-size: 13px; }
+/* Wide enough for one emoji at 16px and no wider — the name field is what
+   deserves the room. Still 44px tall, like everything else. */
+.input--emoji { flex: 0 0 62px; min-width: 62px; text-align: center; padding-left: 6px; padding-right: 6px; }
+
+/* ---- Folder manager rows ---- */
+.folder-manage { list-style: none; margin: 0; padding: 0; }
+.folder-manage__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.folder-manage__row:last-child { border-bottom: none; }
+.folder-manage__name {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  min-height: 44px;
+  padding: 4px 0;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.folder-manage__name:active { background: var(--press); }
+.folder-manage__label { display: block; font-weight: 600; font-size: 16px; }
+.folder-manage__count { display: block; font-size: 12.5px; margin-top: 1px; }
+.folder-manage__warn {
+  flex: 1 0 100%;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+/* An action chip (opens the folder manager) — outlined rather than filled so it
+   never looks like an active filter. */
+.chip--action { border-style: dashed; }
+
+/* ---- The tappable "Cooked 3× · last yesterday" row in About ---- */
+.cooked-line {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.cooked-line:active { background: var(--press); }
+.cooked-line:disabled { opacity: 0.5; cursor: not-allowed; }
+.cooked-line__undo {
+  flex: none;
+  font-weight: 700;
+  color: var(--paprika);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* The folders button in About: a block button whose label is the current value,
+   so it can be long. Left-aligned and allowed to wrap rather than truncated —
+   "🗂 desserts · batch-cooking" cut to "🗂 desserts · batch…" hides the answer
+   the button exists to show. */
+.folder-cta {
+  justify-content: flex-start;
+  text-align: left;
+  margin-top: 8px;
+  font-weight: 600;
+  white-space: normal;
+  line-height: 1.35;
+}

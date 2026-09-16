@@ -1,11 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RecipeCard from "./RecipeCard";
+import FolderManager from "./FolderManager";
 import Toast from "./Toast";
 import { EmptyState, ErrorState, SkeletonList } from "./States";
 import { apiGet, apiPatch, errorMessage, isAbort, withQuery } from "./api";
+import {
+  ALL,
+  UNFILED,
+  filterByFolder,
+  folderLabel,
+  folderQueryParam,
+  sameFilter,
+  sortFolders,
+  toggleFilter,
+  type FolderFilter,
+} from "./folders";
 import { useDebouncedQuery } from "./useDebouncedValue";
 import type { Folder, FolderListResponse, Recipe, RecipeListResponse, RecipeResponse } from "./types";
 
@@ -34,8 +46,9 @@ export default function RecipeList() {
   const [rawQuery, setRawQuery] = useState("");
   const query = useDebouncedQuery(rawQuery, 250);
 
-  const [folderId, setFolderId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<FolderFilter>(ALL);
   const [favOnly, setFavOnly] = useState(false);
+  const [managing, setManaging] = useState(false);
 
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -50,11 +63,23 @@ export default function RecipeList() {
   useEffect(() => {
     let alive = true;
     apiGet<FolderListResponse>("/api/folders")
-      .then((d) => alive && setFolders(d.folders ?? []))
+      .then((d) => alive && setFolders(sortFolders(d.folders ?? [])))
       .catch(() => {});
     return () => {
       alive = false;
     };
+  }, []);
+
+  /**
+   * The folder sheet hands back the whole new list. Two consequences have to be
+   * handled here rather than in the sheet, because they are about THIS screen:
+   * a filter pointing at a folder that no longer exists has to fall back to
+   * All, and a delete changes which recipes match, so the list is re-fetched.
+   */
+  const applyFolderChange = useCallback((next: Folder[]) => {
+    setFolders(sortFolders(next));
+    setFilter((cur) => (cur.kind === "folder" && !next.some((f) => f.id === cur.id) ? ALL : cur));
+    setReloadKey((k) => k + 1);
   }, []);
 
   /**
@@ -77,7 +102,15 @@ export default function RecipeList() {
     setStatus((s) => (s === "ready" ? "ready" : "loading"));
 
     apiGet<RecipeListResponse>(
-      withQuery("/api/recipes", { q: query, folder: folderId, favorite: favOnly, limit: 100 }),
+      withQuery("/api/recipes", {
+        q: query,
+        // `null` for All and for Unfiled — the API has no "not in any folder"
+        // filter, so Unfiled is finished on the client below. See the known-gap
+        // note in docs/API_SPEC.md §4.
+        folder: folderQueryParam(filter),
+        favorite: favOnly,
+        limit: 100,
+      }),
       ctrl.signal,
     )
       .then((data) => {
@@ -92,7 +125,12 @@ export default function RecipeList() {
       });
 
     return () => ctrl.abort();
-  }, [query, folderId, favOnly, reloadKey]);
+  }, [query, filter, favOnly, reloadKey]);
+
+  /** What the list actually renders: the server's page, minus the one filter the
+   *  server can't express. `useMemo` because `filterByFolder` returns a new
+   *  array every call, which would re-render every card on every keystroke. */
+  const visible = useMemo(() => filterByFolder(recipes, filter), [recipes, filter]);
 
   /**
    * OPTIMISTIC UI: flip the star now, tell the server after, put it back if the
@@ -116,7 +154,7 @@ export default function RecipeList() {
     }
   }, []);
 
-  const filtering = query !== "" || folderId !== null || favOnly;
+  const filtering = query !== "" || filter.kind !== "all" || favOnly;
 
   return (
     <>
@@ -163,21 +201,60 @@ export default function RecipeList() {
           >
             ★ Favourites
           </button>
-          {folders.map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              className="chip"
-              aria-pressed={folderId === f.id}
-              /* Tapping the active chip clears it — a filter you can't switch
-                 off is a trap on a screen with no visible "all" control. */
-              onClick={() => setFolderId((cur) => (cur === f.id ? null : f.id))}
-            >
-              {f.emoji ? `${f.emoji} ` : ""}
-              {f.name}
-              <span className="chip__count">{f.recipeCount}</span>
-            </button>
-          ))}
+
+          {/* The folder chips are ONE group with one answer: All, Unfiled, or a
+              folder. They are still `aria-pressed` buttons rather than radios,
+              because the favourites chip beside them really is a toggle and a
+              row that mixes the two roles is harder to explain than a row that
+              looks uniform and is documented. Tapping the active one returns to
+              All, so the filter is always escapable. */}
+          {folders.length > 0 && (
+            <>
+              <button
+                type="button"
+                className="chip"
+                aria-pressed={filter.kind === "all"}
+                onClick={() => setFilter(ALL)}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                className="chip"
+                aria-pressed={filter.kind === "unfiled"}
+                onClick={() => setFilter((cur) => toggleFilter(cur, UNFILED))}
+                /* No count: the server doesn't report one, and a number derived
+                   from the loaded page would be a guess presented as a fact. */
+                title="Recipes that aren't in any folder"
+              >
+                Unfiled
+              </button>
+              {folders.map((f) => {
+                const chipFilter: FolderFilter = { kind: "folder", id: f.id };
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    className="chip"
+                    aria-pressed={sameFilter(filter, chipFilter)}
+                    onClick={() => setFilter((cur) => toggleFilter(cur, chipFilter))}
+                  >
+                    {folderLabel(f)}
+                    <span className="chip__count">{f.recipeCount}</span>
+                  </button>
+                );
+              })}
+            </>
+          )}
+
+          <button
+            type="button"
+            className="chip chip--action"
+            onClick={() => setManaging(true)}
+            aria-haspopup="dialog"
+          >
+            {folders.length > 0 ? "⚙ Folders" : "＋ New folder"}
+          </button>
         </div>
       </div>
 
@@ -188,7 +265,7 @@ export default function RecipeList() {
           <ErrorState message={error} onRetry={() => setReloadKey((k) => k + 1)} />
         )}
 
-        {status === "ready" && recipes.length === 0 && !filtering && (
+        {status === "ready" && visible.length === 0 && !filtering && (
           <EmptyState mark="🍲" title="No recipes yet">
             Mise fills up from your phone&apos;s share sheet.
             <ol className="empty__steps">
@@ -203,26 +280,36 @@ export default function RecipeList() {
           </EmptyState>
         )}
 
-        {status === "ready" && recipes.length === 0 && filtering && (
+        {status === "ready" && visible.length === 0 && filtering && (
           <EmptyState mark="🔍" title="Nothing matches">
             {query ? (
               <>
                 No recipe mentions <strong>{query}</strong>.
               </>
+            ) : filter.kind === "unfiled" ? (
+              <>Every recipe is in a folder. Tidy.</>
             ) : (
               <>No recipes in that filter yet.</>
             )}
           </EmptyState>
         )}
 
-        {status !== "loading" && recipes.length > 0 && (
+        {status !== "loading" && visible.length > 0 && (
           <div className="recipe-list">
-            {recipes.map((r) => (
+            {visible.map((r) => (
               <RecipeCard key={r.id} recipe={r} onToggleFavorite={toggleFavorite} />
             ))}
           </div>
         )}
       </div>
+
+      {managing && (
+        <FolderManager
+          folders={folders}
+          onClose={() => setManaging(false)}
+          onChanged={applyFolderChange}
+        />
+      )}
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
     </>

@@ -4,14 +4,29 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatIngredient, scaleIngredients } from "@/lib/scale";
+import FolderPicker from "./FolderPicker";
 import RecipeEditor from "./RecipeEditor";
 import Thumb from "./Thumb";
 import Toast from "./Toast";
 import { ErrorState } from "./States";
 import { apiDelete, apiGet, apiPatch, apiPost, errorMessage } from "./api";
+import {
+  applyCookedDelta,
+  canUndoCooked,
+  cookedLine,
+  cookedToastText,
+  undoCookedLabel,
+} from "./cooked";
+import { applyFolderCountDelta, folderSummary, sortFolders } from "./folders";
 import { PLATFORM_LABEL, countsLine, formatMinutes, hostOf, relativeTime } from "./format";
 import { useWakeLock } from "./useWakeLock";
-import type { GroceryFromRecipeResponse, Recipe, RecipeResponse } from "./types";
+import type {
+  Folder,
+  FolderListResponse,
+  GroceryFromRecipeResponse,
+  Recipe,
+  RecipeResponse,
+} from "./types";
 
 /**
  * `/recipe/[id]` — the cook view. The screen the whole project exists for.
@@ -55,7 +70,21 @@ export default function CookView({
   const [editing, setEditing] = useState(initialEdit);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState<"grocery" | "cooked" | "delete" | null>(null);
-  const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
+  const [pickingFolders, setPickingFolders] = useState(false);
+  /** Null until the About tab asks for them — see the lazy fetch below. */
+  const [folders, setFolders] = useState<Folder[] | null>(null);
+  /**
+   * The toast now carries its own action and duration, because an undo toast is
+   * a different object from an error toast: it has a button, and it has to
+   * outlive the ~4 s an error needs, since the user has to read it, decide, and
+   * reach the button.
+   */
+  const [toast, setToast] = useState<{
+    text: string;
+    tone: "ok" | "error";
+    action?: { label: string; onAction: () => void };
+    ms?: number;
+  } | null>(null);
 
   // Cooking-session state (see the note above).
   const [servings, setServings] = useState<number | null>(null);
@@ -153,15 +182,59 @@ export default function CookView({
     }
   }
 
-  async function markCooked() {
+  /**
+   * "Cooked it" and its undo, as one function over a delta.
+   *
+   * WHY THIS IS NOW OPTIMISTIC, when it wasn't before: undo has to feel like
+   * taking the tap back, and a spinner between "Undo" and the number changing
+   * makes you wonder whether it worked and tap again. So the count moves first
+   * (`applyCookedDelta`, which reproduces the server's rule exactly — see
+   * components/cooked.ts) and the request reconciles. The rollback is the
+   * snapshot below plus an error toast; an optimistic update whose failure is
+   * invisible is worse than no optimism at all.
+   *
+   * WHY A DELETE RATHER THAN A `POST …/cooked { delta: -1 }`: the resource is
+   * "a cook that happened"; removing one is a DELETE on it. That also keeps the
+   * verb honest about being idempotent at zero, which POST is not expected to
+   * be. See docs/API_SPEC.md §3.
+   */
+  async function changeCooked(delta: 1 | -1) {
     if (!recipe) return;
+    if (delta === -1 && !canUndoCooked(recipe)) return;
+
+    const previous = recipe;
+    const optimistic = applyCookedDelta(recipe, delta);
+    setRecipe(optimistic);
     setBusy("cooked");
     try {
-      const { recipe: saved } = await apiPost<RecipeResponse>(`/api/recipes/${recipe.id}/cooked`);
+      const { recipe: saved } =
+        delta === 1
+          ? await apiPost<RecipeResponse>(`/api/recipes/${recipe.id}/cooked`)
+          : await apiDelete<RecipeResponse>(`/api/recipes/${recipe.id}/cooked`);
+      // The server is the authority: its count settles any disagreement with
+      // the optimistic guess (another device, a double tap in flight).
       setRecipe(saved);
-      setToast({ text: `Cooked ${saved.cookedCount}×. Nice.`, tone: "ok" });
+      setToast({
+        text: cookedToastText(saved.cookedCount, delta === 1 ? "cooked" : "undone"),
+        tone: "ok",
+        // Only the "cooked" direction offers a way back. An undo of an undo is
+        // just tapping "Cooked it" again, which is right there.
+        ...(delta === 1
+          ? {
+              action: {
+                label: "Undo",
+                onAction: () => {
+                  setToast(null);
+                  void changeCooked(-1);
+                },
+              },
+              ms: 7000, // long enough to notice a mis-tap and act on it
+            }
+          : {}),
+      });
     } catch (e) {
-      setToast({ text: errorMessage(e, "Couldn't record that."), tone: "error" });
+      setRecipe(previous); // roll back…
+      setToast({ text: errorMessage(e, "Couldn't record that."), tone: "error" }); // …visibly
     } finally {
       setBusy(null);
     }
@@ -182,6 +255,28 @@ export default function CookView({
       setConfirmingDelete(false);
     }
   }
+
+  /**
+   * Folder names, fetched LAZILY — only once the About tab is opened, and only
+   * once per mount.
+   *
+   * The cook view's job is to put the ingredients on screen; a second request
+   * on load to name folders that are shown three taps away would spend the
+   * budget of the one screen that has to be instant (PRD S3). The About tab is
+   * not the default tab, so by the time this runs the user has already stopped
+   * looking at the hob. A failure is deliberately silent: the fallback below
+   * says "in 2 folders" instead of naming them, which is degraded, not broken.
+   */
+  useEffect(() => {
+    if (tab !== "about" || folders !== null) return;
+    let alive = true;
+    apiGet<FolderListResponse>("/api/folders")
+      .then((d) => alive && setFolders(sortFolders(d.folders ?? [])))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [tab, folders]);
 
   // Escape closes the confirm dialog — the behaviour every modal owes you.
   useEffect(() => {
@@ -441,11 +536,46 @@ export default function CookView({
               </div>
             )}
 
+            {/* FOLDERS. A button that states the current answer rather than a
+                label plus a control: on a phone, "🗂 desserts · batch-cooking"
+                is both the value and the way to change it, and it costs one row
+                instead of three. */}
+            <div>
+              <span className="section-title">Folders</span>
+              <button
+                type="button"
+                className="btn btn--block folder-cta"
+                onClick={() => setPickingFolders(true)}
+                aria-haspopup="dialog"
+              >
+                🗂{" "}
+                {recipe.folderIds.length === 0
+                  ? "Add to a folder"
+                  : folders
+                    ? folderSummary(folders, recipe.folderIds)
+                    : `In ${recipe.folderIds.length} folder${recipe.folderIds.length === 1 ? "" : "s"}`}
+              </button>
+            </div>
+
             <div className="muted" style={{ fontSize: 13.5, lineHeight: 1.7 }}>
+              {/* The cooked counter is TAPPABLE, and the second half of the
+                  undo story: the toast's Undo button is gone four seconds after
+                  a mis-tap, but this row is always there. Same action, two
+                  affordances — one for "I noticed immediately", one for "I
+                  noticed at the weekend". */}
               {recipe.cookedCount > 0 && (
-                <div>
-                  Cooked {recipe.cookedCount}× · last {relativeTime(recipe.lastCookedAt)}
-                </div>
+                <button
+                  type="button"
+                  className="cooked-line"
+                  onClick={() => void changeCooked(-1)}
+                  disabled={busy !== null}
+                  aria-label={undoCookedLabel(recipe.cookedCount)}
+                >
+                  <span>{cookedLine(recipe.cookedCount, relativeTime(recipe.lastCookedAt))}</span>
+                  <span className="cooked-line__undo" aria-hidden>
+                    Undo
+                  </span>
+                </button>
               )}
               <div>Saved {relativeTime(recipe.createdAt)}</div>
               {/* PROVENANCE (PRD F13): which tier produced this, and how sure it
@@ -486,7 +616,12 @@ export default function CookView({
         >
           {busy === "grocery" ? <span className="spinner" /> : "🛒"} Add to list
         </button>
-        <button type="button" className="btn" onClick={markCooked} disabled={busy !== null}>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => void changeCooked(1)}
+          disabled={busy !== null}
+        >
           {busy === "cooked" ? <span className="spinner" /> : "🍳"} Cooked it
         </button>
         <button
@@ -548,7 +683,37 @@ export default function CookView({
         </div>
       )}
 
-      <Toast message={toast?.text ?? null} tone={toast?.tone} onDismiss={() => setToast(null)} />
+      {pickingFolders && (
+        <FolderPicker
+          recipeId={recipe.id}
+          folderIds={recipe.folderIds}
+          onClose={() => setPickingFolders(false)}
+          onSaved={(saved, pickerFolders) => {
+            // The recipe comes back authoritative from the PUT; the folder
+            // counts are patched locally from the before/after sets so the
+            // names and counts in About agree with what was just saved without
+            // another GET /api/folders.
+            setFolders(applyFolderCountDelta(pickerFolders, recipe.folderIds, saved.folderIds));
+            setRecipe(saved);
+            setPickingFolders(false);
+            setToast({
+              text:
+                saved.folderIds.length === 0
+                  ? "Removed from every folder."
+                  : `Saved to ${folderSummary(pickerFolders, saved.folderIds)}.`,
+              tone: "ok",
+            });
+          }}
+        />
+      )}
+
+      <Toast
+        message={toast?.text ?? null}
+        tone={toast?.tone}
+        action={toast?.action}
+        ms={toast?.ms}
+        onDismiss={() => setToast(null)}
+      />
     </div>
   );
 }

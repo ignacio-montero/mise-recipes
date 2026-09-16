@@ -66,7 +66,13 @@ export const GET = handle(async (req: Request) => {
   const cursor = parseCursor(sp.get("cursor"));
 
   const where: Record<string, unknown> = {};
-  if (folder) where.folders = { some: { folderId: folder } };
+  // `?folder=none` is a reserved value meaning "filed nowhere". Without it the
+  // UI's "Unfiled" chip has to filter client-side over whatever page it already
+  // loaded — correct today, quietly wrong the moment the list paginates past a
+  // page. "none" is safe as a sentinel because folder ids are cuids, which
+  // always start with "c" and are far longer.
+  if (folder === "none") where.folders = { none: {} };
+  else if (folder) where.folders = { some: { folderId: folder } };
   if (favoriteParam !== null) where.favorite = favoriteParam !== "false" && favoriteParam !== "0";
   // Tags live inside the JSON array, so match the quoted form to avoid "veg"
   // hitting "vegetarian" at the SQL level; the JS pass below is exact anyway.
