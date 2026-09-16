@@ -95,9 +95,27 @@ export type ApiErrorCode =
 export type RecipeListResponse = { recipes: Recipe[]; nextCursor: string | null };
 export type RecipeResponse = { recipe: Recipe };
 export type FolderListResponse = { folders: Folder[] };
-export type ImportListResponse = { imports: ImportJob[] } | ImportJob[];
+
+/** `GET /api/imports` — the key is `jobs`, NOT `imports`. Verified against
+ *  `app/api/imports/route.ts`; an earlier draft of this file guessed wrong and
+ *  would have rendered an empty "Recent imports" strip forever, silently,
+ *  because `undefined ?? []` is not a type error. Done jobs carry their whole
+ *  `recipe` inline, so the strip needs no follow-up `/api/recipes/:id` calls. */
+export type ImportListResponse = { jobs: ImportJob[] };
+
+/** `POST /api/imports` — 202, before any extraction has happened. */
+export type ImportEnqueueResponse = { id: string; status: ImportStatus };
+
 export type GroceryListResponse = { items: GroceryItem[] };
+export type GroceryItemResponse = { item: GroceryItem };
+
+/** `POST /api/grocery/from-recipe/:id` returns the WHOLE refreshed list, not
+ *  just the new rows: merging ("2 lb shrimp" + "1 lb shrimp" → "3 lb shrimp")
+ *  rewrites existing items too, so appending `added` rows would leave the
+ *  client's copy stale. Always re-render from `items`. */
 export type GroceryFromRecipeResponse = { added: number; items: GroceryItem[] };
+
+export type GroceryClearResponse = { deleted: number };
 
 /** The fields `PATCH /api/recipes/:id` accepts. Anything else is a 400, so the
  *  editor is typed against this rather than against `Recipe`. */

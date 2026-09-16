@@ -1,0 +1,359 @@
+// The import worker. One loop, one job at a time, inside the `mise-web` process
+// (docs/ARCHITECTURE.md §2). The queue IS the `ImportJob` table: no Redis, no
+// BullMQ, no second container — and, because the queue is the database, a job
+// cannot be "accepted" and then lost in a process that died, which is the whole
+// failure mode a message broker is usually bought to avoid.
+//
+// Concept — **job queue / background worker.** `POST /api/imports` writes a row
+// and returns 202 in milliseconds; this loop does the 5-40 s of work afterwards
+// and the phone polls `GET /api/imports/:id`. An HTTP request held open for 40 s
+// dies the moment the phone leaves wifi, which is why the seam exists at all.
+//
+// Invariants this file is responsible for:
+//   • SERIAL. One import at a time. Two concurrent yt-dlp/ffmpeg spikes do not
+//     fit in a 640 MB container, and SQLite has one writer anyway.
+//   • THE LOOP NEVER DIES. Every tick is wrapped; a thrown anything schedules
+//     the next tick instead of silently ending imports until the next deploy.
+//   • NOTHING IS STUCK FOREVER. `running` rows are requeued at startup, because
+//     a row in `running` with no process behind it is by definition orphaned.
+//   • RETRIES ARE FREE. `rawText` is persisted the moment gathering succeeds, so
+//     attempt 2 never touches Instagram again.
+
+import { config } from "./config";
+import { prisma } from "./prisma";
+import { parseServingsCount } from "./scale";
+import { ExtractionError } from "./extract/classify";
+import { gather, structure, toExtraction } from "./extract";
+import { saveHeroImage } from "./images";
+import { sweepTempDir } from "./ytdlp";
+import type { Gathered, ImportStage, ParsedRecipe } from "./types";
+
+// Re-exported so "start the worker" and "clean the temp dir" are one import for
+// callers; the implementation stays next to the code that creates those files.
+export { sweepTempDir } from "./ytdlp";
+
+/** Wait this long after a failed attempt before the same job is eligible again.
+ *  Without it, `maxAttempts` retries burn through in ~4 s and a transient
+ *  Instagram 429 or Gemini 503 is guaranteed to be transient in exactly the
+ *  wrong way. Indexed by attempts already used; the last value repeats.
+ *
+ *  Held in memory rather than as a `nextAttemptAt` column because it is a
+ *  scheduling hint, not data: losing it on restart just means we try sooner,
+ *  which is the harmless direction. */
+const RETRY_BACKOFF_MS = [5_000, 30_000, 120_000];
+
+/** Errors are shown to the user (in the PWA and in Telegram), so they are
+ *  sentences, not stack traces — but a runaway model message must not become a
+ *  wall of text in a chat bubble. */
+const MAX_ERROR_CHARS = 400;
+
+/** Everything Gemini could have seen. Same cap as the provenance blob. */
+const MAX_RAW_TEXT = 32_000;
+
+type WorkerStatus = { alive: boolean; lastTickAt: string | null; pending: number };
+
+// ── Loop state ───────────────────────────────────────────────────────────────
+// Module-level singletons. Next's dev server re-evaluates modules on edit, so
+// `startWorker()` is idempotent and `stopWorker()` exists to make that testable.
+
+let started = false;
+let timer: NodeJS.Timeout | null = null;
+let ticking = false;
+let lastTickAt: Date | null = null;
+/** Last observed count, refreshed every tick. `workerStatus()` is called from a
+ *  route handler that must answer synchronously, so it reads the cache rather
+ *  than issuing its own query on every healthcheck. */
+let pendingCount = 0;
+/** jobId → epoch ms before which this job must not be retried. */
+const cooldowns = new Map<string, number>();
+
+export function workerStatus(): WorkerStatus {
+  return {
+    alive: started,
+    lastTickAt: lastTickAt ? lastTickAt.toISOString() : null,
+    pending: pendingCount,
+  };
+}
+
+export function startWorker(): void {
+  if (started) return; // idempotent: instrumentation.ts may register twice in dev
+  started = true;
+  console.log(`[worker] starting (poll ${config.worker.pollMs}ms, max ${config.worker.maxAttempts} attempts)`);
+  void bootstrap().finally(() => schedule(0));
+}
+
+export function stopWorker(): void {
+  started = false;
+  if (timer) clearTimeout(timer);
+  timer = null;
+}
+
+/** Crash recovery, run once before the first tick. */
+async function bootstrap(): Promise<void> {
+  try {
+    // Imports run one at a time in one process, so ANY row still marked
+    // `running` at startup belongs to a process that no longer exists — a
+    // container restart mid-import, an OOM kill, a deploy. Requeue, don't fail:
+    // `attempts` was already incremented when it was claimed, so a job that
+    // reliably kills the process still gives up eventually (poison-message
+    // protection) instead of crash-looping forever.
+    const { count } = await prisma.importJob.updateMany({
+      where: { status: "running" },
+      data: { status: "pending", stage: null },
+    });
+    if (count > 0) console.log(`[worker] requeued ${count} interrupted job(s)`);
+  } catch (e) {
+    console.error("[worker] startup requeue failed", e);
+  }
+  try {
+    // Anything under DATA_DIR/tmp is orphaned for the same reason.
+    await sweepTempDir();
+  } catch (e) {
+    console.error("[worker] temp sweep failed", e);
+  }
+}
+
+function schedule(delayMs: number): void {
+  if (!started) return;
+  timer = setTimeout(() => {
+    void tick();
+  }, delayMs);
+  // Do not hold the event loop open on our account. The Next server keeps the
+  // process alive; a test or a script should be able to exit without stopWorker().
+  timer.unref?.();
+}
+
+/**
+ * One pass. Self-rescheduling `setTimeout` rather than `setInterval`: an import
+ * can take 40 s, and `setInterval` would keep firing underneath it and pile up
+ * overlapping ticks. This way the next tick is only ever scheduled once the
+ * previous one has finished.
+ */
+async function tick(): Promise<void> {
+  if (ticking) return;
+  ticking = true;
+  let didWork = false;
+  try {
+    lastTickAt = new Date();
+    pendingCount = await prisma.importJob.count({ where: { status: "pending" } });
+
+    // Take a few candidates, not one: the oldest pending job may be cooling off
+    // after a failed attempt, and letting it block everything behind it is
+    // classic head-of-line blocking.
+    const candidates = await prisma.importJob.findMany({
+      where: { status: "pending" },
+      orderBy: { createdAt: "asc" },
+      take: 5,
+    });
+    const now = Date.now();
+    const next = candidates.find((j) => (cooldowns.get(j.id) ?? 0) <= now);
+    if (next) {
+      didWork = true;
+      await runJob(next.id);
+    }
+  } catch (e) {
+    // The contract of this catch: the loop outlives every possible failure,
+    // including the database being momentarily unreadable.
+    console.error("[worker] tick failed", e);
+  } finally {
+    ticking = false;
+    // Drain quickly when there is a queue; idle politely when there is not.
+    schedule(didWork ? 50 : config.worker.pollMs);
+  }
+}
+
+// ── One job ──────────────────────────────────────────────────────────────────
+
+type ClaimedJob = {
+  id: string;
+  url: string;
+  attempts: number;
+  rawText: string | null;
+  suppliedText: string | null;
+};
+
+/**
+ * Compare-and-set claim: flip `pending` → `running` only if it is still
+ * `pending`. `updateMany` with the old status in the WHERE clause makes that a
+ * single atomic statement, so two processes (a stray `next dev` alongside the
+ * container, say) can never both own the same job. This is **optimistic
+ * concurrency control**; the row's own status column is the version token.
+ */
+async function claim(id: string): Promise<ClaimedJob | null> {
+  const { count } = await prisma.importJob.updateMany({
+    where: { id, status: "pending" },
+    data: { status: "running", stage: "fetching", error: null, attempts: { increment: 1 } },
+  });
+  if (count === 0) return null;
+  return prisma.importJob.findUnique({
+    where: { id },
+    select: { id: true, url: true, attempts: true, rawText: true, suppliedText: true },
+  });
+}
+
+async function runJob(id: string): Promise<void> {
+  const job = await claim(id);
+  if (!job) return; // someone else took it, or it was cancelled between queries
+
+  // Stage writes are fire-and-forget so the pipeline never waits on the UI, but
+  // the handle is kept so the terminal write cannot be overtaken by a late
+  // "structuring" update landing on an already-`done` row.
+  let stageWrite: Promise<unknown> = Promise.resolve();
+  const setStage = (stage: ImportStage): void => {
+    stageWrite = prisma.importJob
+      .update({ where: { id: job.id }, data: { stage } })
+      .catch((e: unknown) => console.warn("[worker] stage update failed", e));
+  };
+
+  try {
+    // Priority: what the user pasted, then what we already gathered, then the
+    // network. The second case is why a retry is free — attempt 2 of a Gemini
+    // outage must not re-scrape Instagram (and risk a rate limit) to re-learn
+    // text we already have.
+    const sourceText = job.suppliedText?.trim() || job.rawText?.trim() || null;
+
+    const gathered = await gather(job.url, sourceText, setStage);
+
+    // Persist the gathered text BEFORE structuring, not after: Tier 3 is the
+    // most likely step to fail, and it is the step whose retry we most want to
+    // be free.
+    await stageWrite;
+    await prisma.importJob.update({
+      where: { id: job.id },
+      data: { rawText: gathered.text.slice(0, MAX_RAW_TEXT), stage: "structuring" },
+    });
+
+    const parsed = await structure(gathered);
+
+    if (!parsed.isRecipe) {
+      await finish(job.id, {
+        status: "not_recipe",
+        error: "That link doesn't look like a recipe — no ingredients or method in it.",
+      });
+      console.log(`[worker] ${job.id} not_recipe (confidence ${parsed.confidence})`);
+      return;
+    }
+
+    const recipeId = await saveRecipe(job.url, gathered, parsed);
+    await finish(job.id, { status: "done", recipeId, error: null });
+    console.log(`[worker] ${job.id} done → recipe ${recipeId} [${gathered.tiers.join(" → ")}]`);
+  } catch (e) {
+    await stageWrite.catch(() => {});
+    await handleFailure(job, e);
+  }
+}
+
+/** Terminal write. Clears the stage so the UI stops showing a phase. */
+async function finish(
+  id: string,
+  data: { status: string; recipeId?: string | null; error: string | null },
+): Promise<void> {
+  cooldowns.delete(id);
+  await prisma.importJob.update({ where: { id }, data: { ...data, stage: null } });
+}
+
+async function handleFailure(job: ClaimedJob, e: unknown): Promise<void> {
+  // `canRetryWithText === false` is this pipeline's way of saying "this URL will
+  // never work" (unsupported host, a link that is not a post). Retrying that
+  // twice more only delays telling the user something we already know.
+  const permanent = e instanceof ExtractionError && !e.canRetryWithText;
+  const message = userMessage(e);
+  const exhausted = job.attempts >= config.worker.maxAttempts;
+
+  console.error(`[worker] ${job.id} attempt ${job.attempts} failed: ${message}`);
+
+  if (permanent || exhausted) {
+    await finish(job.id, { status: "failed", error: message });
+    return;
+  }
+
+  // Back to `pending` — the row is the retry queue. The cooldown lives in
+  // memory; the durable part (status, attempts, rawText) is in the row.
+  const backoff = RETRY_BACKOFF_MS[Math.min(job.attempts - 1, RETRY_BACKOFF_MS.length - 1)];
+  cooldowns.set(job.id, Date.now() + backoff);
+  await prisma.importJob.update({
+    where: { id: job.id },
+    // The error is kept visible while it retries: "Instagram returned no
+    // caption (retrying)" is more honest than a silent spinner.
+    data: { status: "pending", stage: null, error: message },
+  });
+}
+
+/** Extraction failures already carry a sentence written for a human. Anything
+ *  else is a bug, and a bug's message is for the log, not for the user. */
+function userMessage(e: unknown): string {
+  if (e instanceof ExtractionError) return e.message.slice(0, MAX_ERROR_CHARS);
+  console.error("[worker] unexpected error", e);
+  return "Something went wrong while importing that link.";
+}
+
+// ── Recipe creation ──────────────────────────────────────────────────────────
+
+async function saveRecipe(
+  jobUrl: string,
+  gathered: Gathered,
+  parsed: ParsedRecipe,
+): Promise<string> {
+  // `sourceUrl` is the dedupe key and it is UNIQUE, so the stored spelling must
+  // be the one `POST /api/imports` normalises to — otherwise the route's
+  // "already saved?" check misses and we grow duplicates the constraint cannot
+  // catch. The resolved canonical URL is still checked, so a vm.tiktok.com short
+  // link and the full URL it redirects to collapse to one recipe too.
+  const existing = await prisma.recipe.findFirst({
+    where: { OR: [{ sourceUrl: jobUrl }, { sourceUrl: gathered.canonicalUrl }] },
+    select: { id: true },
+  });
+  if (existing) {
+    console.log(`[worker] ${jobUrl} already saved as ${existing.id}`);
+    return existing.id;
+  }
+
+  const heroImagePath = await saveHeroImage(gathered.thumbnailUrl);
+  const servings = parsed.servings ?? null;
+
+  try {
+    const created = await prisma.recipe.create({
+      data: {
+        title: parsed.title.trim() || "Untitled recipe",
+        description: parsed.description ?? null,
+        sourceUrl: jobUrl,
+        sourcePlatform: gathered.platform,
+        sourceAuthor: gathered.author,
+        heroImagePath,
+        servings,
+        // Parsed once, at write time, because the cook view's scaler needs a
+        // number and "6-8 tacos" is not one. See lib/scale.ts.
+        servingsCount: parseServingsCount(servings),
+        totalMinutes: parsed.totalMinutes ?? null,
+        // JSON TEXT columns (docs/ARCHITECTURE.md §4). Reads go back through
+        // toRecipeDTO; this is the only place that writes them.
+        ingredients: JSON.stringify(parsed.ingredients ?? []),
+        steps: JSON.stringify(parsed.steps ?? []),
+        notes: parsed.notes ?? null,
+        tags: JSON.stringify(parsed.tags ?? []),
+        extraction: JSON.stringify(toExtraction(gathered, parsed)),
+      },
+      select: { id: true },
+    });
+    return created.id;
+  } catch (e) {
+    // Check-then-act above is a race by construction (two jobs for the same URL
+    // finishing together). The unique index is the real referee, so honour its
+    // verdict instead of failing the import.
+    if (isUniqueViolation(e)) {
+      const row = await prisma.recipe.findFirst({
+        where: { sourceUrl: jobUrl },
+        select: { id: true },
+      });
+      if (row) return row.id;
+    }
+    throw e;
+  }
+}
+
+/** Prisma's "unique constraint failed" code. Matched structurally rather than
+ *  with `instanceof PrismaClientKnownRequestError` to avoid importing Prisma's
+ *  runtime error classes into a hot path. */
+function isUniqueViolation(e: unknown): boolean {
+  return typeof e === "object" && e !== null && (e as { code?: string }).code === "P2002";
+}

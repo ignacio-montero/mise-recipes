@@ -12,13 +12,21 @@ import { useEffect } from "react";
  * rollback in this app surfaces here.
  *
  * `role="alert"` makes assistive tech announce it without needing focus.
+ *
+ * `tone` defaults to "error" because that is the case this component exists
+ * for. The success variant ("Added 9 items to the grocery list") is the same
+ * furniture in green, and it gets `role="status"` instead: "alert" is
+ * ASSERTIVE — it interrupts a screen reader mid-sentence — which is right for a
+ * failed save and rude for a confirmation.
  */
 export default function Toast({
   message,
+  tone = "error",
   onDismiss,
   ms = 4000,
 }: {
   message: string | null;
+  tone?: "ok" | "error";
   onDismiss: () => void;
   ms?: number;
 }) {
@@ -30,7 +38,10 @@ export default function Toast({
 
   if (!message) return null;
   return (
-    <div className="toast" role="alert">
+    <div
+      className={tone === "ok" ? "toast toast--ok" : "toast"}
+      role={tone === "ok" ? "status" : "alert"}
+    >
       {message}
     </div>
   );
