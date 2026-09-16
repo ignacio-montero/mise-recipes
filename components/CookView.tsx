@@ -268,7 +268,7 @@ export default function CookView({
    * says "in 2 folders" instead of naming them, which is degraded, not broken.
    */
   useEffect(() => {
-    if (tab !== "about" || folders !== null) return;
+    if (folders !== null) return;
     let alive = true;
     apiGet<FolderListResponse>("/api/folders")
       .then((d) => alive && setFolders(sortFolders(d.folders ?? [])))
@@ -276,7 +276,7 @@ export default function CookView({
     return () => {
       alive = false;
     };
-  }, [tab, folders]);
+  }, [folders]);
 
   // Escape closes the confirm dialog — the behaviour every modal owes you.
   useEffect(() => {
@@ -432,6 +432,26 @@ export default function CookView({
         ) : (
           recipe.servings && <div className="cook__meta">🍽 {recipe.servings}</div>
         )}
+
+        {/* Folders, in the HEADER rather than only on the About tab.
+            It used to live one tab away, which meant the answer to "how do I put
+            this in a folder?" was invisible from the screen you are looking at.
+            Filing a recipe is something you do WHILE reading it, so the control
+            belongs beside the title — not behind a tab you open once a month.
+            The chip is both the value and the way to change it. */}
+        <button
+          type="button"
+          className="chip chip--folder"
+          onClick={() => setPickingFolders(true)}
+          aria-haspopup="dialog"
+        >
+          🗂{" "}
+          {recipe.folderIds.length === 0
+            ? "Add to folder"
+            : folders
+              ? folderSummary(folders, recipe.folderIds)
+              : `In ${recipe.folderIds.length} folder${recipe.folderIds.length === 1 ? "" : "s"}`}
+        </button>
 
         {/* role="tablist" is the honest description of a segmented control, and
             it gives arrow-key semantics to assistive tech for free. */}

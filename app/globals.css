@@ -1050,7 +1050,14 @@ button { font-family: inherit; }
    Reuses .modal-backdrop; only the alignment and the panel change. A sheet
    grows from the bottom edge so its rows land under the thumb — the same
    argument that put the tab bar at the bottom. */
-.modal-backdrop--sheet { align-items: flex-end; padding: 0; }
+.modal-backdrop--sheet {
+  align-items: flex-end;
+  padding: 0;
+  /* Lifted clear of the on-screen keyboard. --kb-inset is measured with the
+     VisualViewport API in Sheet.tsx, because no CSS unit — dvh included —
+     knows the keyboard exists. Defaults to 0 when there is no keyboard, and on
+     any browser that does not expose visualViewport. */
+}
 .sheet {
   background: var(--surface);
   width: 100%;
@@ -1059,7 +1066,15 @@ button { font-family: inherit; }
      page is still behind the sheet and a tap up there dismisses it.
      `dvh` rather than `vh` because iOS Safari's `vh` includes the URL bar that
      is not actually there — the same reason the app frame is 100dvh. */
-  max-height: 88dvh;
+  /* Shrink by the same inset we lifted by, or the sheet would simply overflow
+     the top of the screen instead of the bottom. Floor it so a landscape phone
+     with the keyboard up still shows a usable sheet rather than a sliver. */
+  max-height: max(46dvh, calc(88dvh - var(--kb-inset, 0px)));
+  /* Lift clear of the on-screen keyboard. A margin on the flex item itself is
+     more direct than padding on the container, and does not depend on how
+     padding interacts with align-items: flex-end. */
+  margin-bottom: var(--kb-inset, 0px);
+  transition: margin-bottom 120ms ease-out;
   display: flex;
   flex-direction: column;
   border-radius: 18px 18px 0 0;
@@ -1204,4 +1219,29 @@ button { font-family: inherit; }
   font-weight: 600;
   white-space: normal;
   line-height: 1.35;
+}
+
+/* ---- Folder chip in the recipe header ----
+   Filing a recipe is something you do while reading it, so this sits beside the
+   title on every tab rather than behind the About tab where it used to live. */
+.chip--folder {
+  align-self: flex-start;
+  margin-top: 10px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+}
+.chip--folder:active { background: var(--surface-2); }
+
+/* Keep the create/cancel row reachable even mid-scroll with the keyboard up.
+   The VisualViewport fix in Sheet.tsx is what makes the sheet fit at all; this
+   is belt and braces so the primary action is never the thing scrolled off. */
+.folder-new__actions {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  padding-top: 8px;
 }

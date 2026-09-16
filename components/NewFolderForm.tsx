@@ -94,7 +94,10 @@ export default function NewFolderForm({
           placeholder={placeholder}
           aria-label="New folder name"
           enterKeyHint="done"
-          autoCapitalize="none"
+          /* "Desserts", not "desserts" — a folder name is a label the user
+             reads, so let the keyboard capitalise it like any other proper noun.
+             (The emoji field keeps autoCapitalize="none"; it is not prose.) */
+          autoCapitalize="sentences"
           disabled={saving}
         />
         <button

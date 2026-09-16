@@ -110,7 +110,11 @@ export default function FolderPicker({
             disabled={saving || !dirty || status !== "ready"}
           >
             {saving ? <span className="spinner" /> : null}
-            {dirty ? "Save" : "Saved"}
+            {/* "Done", not "Saved": with no pending changes the button closes the
+                sheet, and labelling that "Saved" reads as a confirmation of
+                something that never happened — especially on first open, where
+                there is nothing to save yet. */}
+            {dirty ? "Save" : "Done"}
           </button>
         </div>
       }

@@ -45,6 +45,46 @@ export default function Sheet({
   footer?: React.ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Keep the sheet above the on-screen keyboard.
+   *
+   * ⚠️ THE BUG THIS FIXES: `dvh` does NOT account for the keyboard. It tracks
+   * the browser's collapsing URL bar, nothing else. When iOS opens the keyboard
+   * the LAYOUT viewport stays the same size and only the VISUAL viewport
+   * shrinks — so a `position: fixed` sheet anchored to the bottom of the layout
+   * viewport stays exactly where it was, i.e. underneath the keyboard. What you
+   * see is a sheet cut off at the bottom whose "Create" button you cannot reach,
+   * and scrolling the body does not help because the scrollable area itself is
+   * off-screen.
+   *
+   * `window.visualViewport` is the only way to measure this. The inset is
+   * whatever part of the layout viewport the visual viewport no longer covers:
+   * `innerHeight - (visualViewport.height + visualViewport.offsetTop)`. We
+   * publish it as a CSS variable and let the stylesheet both lift the sheet and
+   * shrink its max-height, so the body stays scrollable instead of overflowing.
+   *
+   * The `scroll` listener is not optional: iOS scrolls the visual viewport when
+   * focusing an input near the bottom, which changes `offsetTop` without firing
+   * `resize`.
+   */
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const el = backdropRef.current;
+    if (!vv || !el) return;
+    const update = () => {
+      const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      el.style.setProperty("--kb-inset", `${Math.round(inset)}px`);
+    };
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -62,6 +102,7 @@ export default function Sheet({
   return (
     <div
       className="modal-backdrop modal-backdrop--sheet"
+      ref={backdropRef}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
