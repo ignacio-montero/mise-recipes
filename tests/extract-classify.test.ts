@@ -260,12 +260,10 @@ describe("collapsing the many spellings of one Instagram reel", () => {
     expect(c.canonicalUrl).toBe("https://www.instagram.com/share/BAF6qMfDnE/");
   });
 
-  // ⚠️ KNOWN BUG — see the report. `it.fails` asserts that this assertion
-  // currently DOES fail, which keeps the suite green today and turns RED the
-  // moment someone fixes classify.ts, forcing this test to be re-enabled as a
-  // normal `it`. (Vitest calls this an "expected failure"; it is the honest
-  // alternative to `it.skip`, which rots silently.)
-  it.fails("should also defer /share/reel/<token>/ links to the redirect", () => {
+  // FIXED 2026-09-16 (was an `it.fails`): classifyInstagram now checks the
+  // /share/ prefix BEFORE the reel/p/tv loop, so the share token can no longer
+  // masquerade as a shortcode. Promoted back to a normal test.
+  it("defers /share/reel/<token>/ links to the redirect", () => {
     // Instagram's iOS share sheet emits BOTH `/share/<token>/` and
     // `/share/reel/<token>/`. In the second shape the token is an opaque share
     // id, NOT the post's shortcode — but classifyInstagram's `kinds` loop runs

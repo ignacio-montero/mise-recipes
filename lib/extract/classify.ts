@@ -136,8 +136,26 @@ export function classify(rawUrl: string): Classification {
 
 function classifyInstagram(u: URL, host: string, seg: string[]): Classification {
   // Accepted shapes: /reel/<code>/, /reels/<code>/, /p/<code>/, /tv/<code>/,
-  // /<user>/reel/<code>/, and the newer /share/... links the iOS share sheet
-  // produces (whose code only appears after a redirect).
+  // /<user>/reel/<code>/, and the /share/... links the iOS share sheet produces
+  // (whose real shortcode only appears after a redirect).
+  //
+  // ⚠️ /share/ IS CHECKED FIRST, and the order is load-bearing. iOS emits BOTH
+  // `/share/<token>/` and `/share/reel/<token>/`. In the second shape the token
+  // is an opaque per-share id, NOT the post's shortcode — but it is spelled
+  // exactly like `reel/<code>`, so a kinds-loop that runs first happily matches
+  // it and reports a shortcode that does not exist. Two consequences, both bad:
+  //   • gatherInstagram only resolves the redirect when `id === null`, so it
+  //     would fetch /reel/<shareToken>/embed/captioned/ and get the logged-out
+  //     shell back — i.e. "no caption" on the app's PRIMARY ingest path;
+  //   • every re-share mints a fresh token, so `sourceUrl` dedupe never hits and
+  //     the same reel saves again every time it is shared.
+  // Deferring to the redirect is the only way to learn the real identity.
+  if (seg[0] === "share") {
+    return {
+      ok: true, platform: "instagram", canonicalUrl: stripTracking(u).toString(), host, id: null,
+    };
+  }
+
   const kinds = new Set(["reel", "reels", "p", "tv"]);
   for (let i = 0; i < seg.length - 1; i++) {
     if (kinds.has(seg[i]) && SHORTCODE.test(seg[i + 1])) {
@@ -150,13 +168,6 @@ function classifyInstagram(u: URL, host: string, seg: string[]): Classification 
         id: seg[i + 1],
       };
     }
-  }
-  if (seg[0] === "share") {
-    // Keep it verbatim (minus tracking); instagram.ts resolves the redirect and
-    // re-canonicalises once it knows the real shortcode.
-    return {
-      ok: true, platform: "instagram", canonicalUrl: stripTracking(u).toString(), host, id: null,
-    };
   }
   return { ok: false, reason: "That Instagram link is not a post or reel." };
 }

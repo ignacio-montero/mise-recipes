@@ -32,7 +32,9 @@ export function canonicalUrl(raw: string): string | null {
   // `www.`/`m.` are the same site; folding them means the phone's mobile link and
   // the desktop link dedupe against each other. Both variants redirect in
   // practice, so the stored URL stays fetchable.
-  const host = u.hostname.toLowerCase().replace(/^(www|m|mobile)\./, "");
+  // `host`, not `hostname`: hostname drops the port, so a self-hosted recipe
+  // blog on :8443 would share a dedupe key with the same host on :443.
+  const host = u.host.toLowerCase().replace(/^(www|m|mobile)\./, "");
 
   const params = new URLSearchParams();
   const keep = KEEP_PARAMS[host];
