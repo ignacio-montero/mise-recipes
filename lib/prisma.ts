@@ -32,8 +32,21 @@ export const prisma: PrismaClient = (globalForPrisma.prisma ??= new PrismaClient
 // Fire-and-forget: these are session pragmas, applied when the pool opens.
 if (!(globalThis as { __misePragmas?: boolean }).__misePragmas) {
   (globalThis as { __misePragmas?: boolean }).__misePragmas = true;
-  void prisma
-    .$executeRawUnsafe("PRAGMA journal_mode=WAL;")
-    .then(() => prisma.$executeRawUnsafe("PRAGMA busy_timeout=5000;"))
-    .catch((e: unknown) => console.warn("[prisma] could not set pragmas", e));
+  // ⚠️ `PRAGMA journal_mode` RETURNS a row (the mode it settled on), and Prisma's
+  // $executeRaw* refuses any statement that produces results — "Execute returned
+  // results, which is not allowed in SQLite" (P2010). It has to go through
+  // $queryRawUnsafe — and so does `PRAGMA busy_timeout=N` (it returns the value it
+  // set), so BOTH go through the query path. Get this wrong and the pragmas throw
+  // at boot, are swallowed by the catch, and you silently keep SQLite's defaults.
+  void (async () => {
+    try {
+      const [row] = await prisma.$queryRawUnsafe<{ journal_mode: string }[]>(
+        "PRAGMA journal_mode=WAL;",
+      );
+      await prisma.$queryRawUnsafe("PRAGMA busy_timeout=5000;");
+      console.log(`[prisma] journal_mode=${row?.journal_mode ?? "?"} busy_timeout=5000ms`);
+    } catch (e) {
+      console.warn("[prisma] could not set pragmas", e);
+    }
+  })();
 }

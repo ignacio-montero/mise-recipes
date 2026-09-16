@@ -15,6 +15,7 @@
 import { describe, expect, it } from "vitest";
 import {
   htmlToText,
+  dropNonTextElements,
   decodeEntities,
   jsonLdNodes,
   parseIngredientLine,
@@ -279,7 +280,11 @@ describe("ingredients from a JSON-LD list", () => {
   });
 
   it("decodes the HTML entities sites leave in their own JSON", () => {
-    expect(parseIngredientLine("1 tbsp cr&egrave;me fra&icirc;che").item).toContain("crème");
+    // `parseIngredientLine` returns `Ingredient | null`, so the non-null
+    // assertion is doing real work: if the function ever starts returning null
+    // for this input, the test fails on the dereference rather than compiling
+    // into a confusing `undefined` comparison.
+    expect(parseIngredientLine("1 tbsp cr&egrave;me fra&icirc;che")!.item).toContain("crème");
   });
 });
 
@@ -420,5 +425,134 @@ describe("the HTML utilities the other extractors share", () => {
 
   it("keeps <br> as a line break, because captions-in-HTML depend on it", () => {
     expect(htmlToText("<p>1 lb shrimp<br>2 tbsp mayo</p>")).toBe("1 lb shrimp\n2 tbsp mayo");
+  });
+});
+
+// ── The tag stripper, and the outage that lived in it ────────────────────────
+//
+// `dropNonTextElements` was extracted from `htmlToText` when a red-team pass
+// found a **ReDoS** (regular-expression denial of service) in the old
+// implementation. It is worth understanding the shape of that bug, because it
+// is the same shape every time:
+//
+//   /<(script|style|…)\b[^>]*>[\s\S]*?<\/\1\s*>/gi
+//
+// The lazy `[\s\S]*?` grows one character at a time looking for a closing tag.
+// If the tag is never closed, it grows to the end of the document and fails —
+// and then the engine restarts the whole search one character later. That is
+// O(n²) over a 3 MB input, measured at 116 SECONDS for unclosed `<aside>` tags.
+//
+// A 116-second regex in Node is not a slow function, it is an OUTAGE:
+// `String.replace` is synchronous on the only thread, so for those two minutes
+// no request is served, `/api/health` cannot answer (the container is marked
+// unhealthy and restarted) and the pipeline's own AbortController timeouts
+// cannot fire either, because timers need a free event loop. And the attacker's
+// cost is "host a broken HTML page" — which, note, the app fetches on the
+// user's behalf, so it is reachable from outside.
+describe("dropping non-text elements (the ReDoS fix)", () => {
+  it("removes an element's whole content, not just its tags", () => {
+    expect(dropNonTextElements("a<script>var x = 1;</script>b")).not.toContain("var x");
+    expect(dropNonTextElements("a<style>p{color:red}</style>b")).not.toContain("color:red");
+  });
+
+  it("keeps the readable text on either side of what it drops", () => {
+    const out = dropNonTextElements("before<script>junk</script>middle<style>junk</style>after");
+    expect(out).toContain("before");
+    expect(out).toContain("middle");
+    expect(out).toContain("after");
+    expect(out).not.toContain("junk");
+  });
+
+  it("is case-insensitive and tolerates attributes on the opening tag", () => {
+    expect(dropNonTextElements(`x<SCRIPT TYPE="text/javascript">junk</SCRIPT>y`)).not.toContain("junk");
+    expect(dropNonTextElements(`x<script src="/a.js" async>junk</script >y`)).not.toContain("junk");
+  });
+
+  it("does not match a tag that merely starts with a dropped tag's name", () => {
+    // `\b` in the pattern: `<article>` must survive even though `<a…>` is not a
+    // dropped tag and `<aside>` is. Getting this wrong silently deletes the
+    // recipe, since recipes live in <article> on most food blogs.
+    const out = dropNonTextElements("<article>1 lb shrimp</article>");
+    expect(out).toContain("1 lb shrimp");
+  });
+
+  it("drops the remainder of the document when a dropped tag is never closed", () => {
+    // A deliberate choice, not an accident: markup that never closes its
+    // <script> is already broken, and guessing where the author meant it to end
+    // is how you end up back in backtracking territory.
+    const out = dropNonTextElements("keep me<script>never closed and then some text");
+    expect(out).toContain("keep me");
+    expect(out).not.toContain("never closed");
+  });
+
+  it("leaves a document with nothing to drop untouched apart from whitespace", () => {
+    const html = "<p>1 lb shrimp</p><p>2 tbsp mayo</p>";
+    expect(dropNonTextElements(html)).toBe(html);
+  });
+
+  it("handles an empty string and a bare opening tag without throwing", () => {
+    expect(dropNonTextElements("")).toBe("");
+    expect(() => dropNonTextElements("<script")).not.toThrow();
+    expect(() => dropNonTextElements("</script>")).not.toThrow();
+  });
+
+  it("is reusable: the module-level regex's lastIndex cannot leak between calls", () => {
+    // `DROPPED_OPEN` is a module-level /g regex, and a /g regex CARRIES STATE
+    // (`lastIndex`) between calls. Forgetting to reset it is a classic
+    // intermittent bug — every other call silently skips the start of the
+    // input. Running the same input twice is how you catch it.
+    const html = "a<script>junk</script>b";
+    expect(dropNonTextElements(html)).toBe(dropNonTextElements(html));
+  });
+});
+
+describe("htmlToText performance (regression test for the 116-second page)", () => {
+  // A **wall-clock regression test**. Normally asserting on elapsed time is a
+  // smell — it makes a test that can fail because the CI box was busy. It is
+  // the right tool here precisely because the bug WAS the elapsed time: the
+  // output never changed, so no assertion about the returned string could ever
+  // have caught this, and no assertion about the string will catch it coming
+  // back.
+  //
+  // The ceiling is set at 2000 ms against a measured ~1 ms so that it is a
+  // detector for "we are back to quadratic", not a benchmark. A machine 100x
+  // slower than this one still passes; a return of the backtracking regex
+  // (116,000 ms) fails by a factor of 58. Choosing a bound far from both the
+  // good and the bad value is what stops a timing test being flaky.
+  const CEILING_MS = 2_000;
+
+  const timed = (html: string): number => {
+    const t0 = performance.now();
+    htmlToText(html);
+    return performance.now() - t0;
+  };
+
+  it("survives 3 MB of unclosed <script> tags", () => {
+    const html = "<script>".repeat(375_000); // ~3 MB, the old fetch ceiling
+    expect(html.length).toBeGreaterThan(3_000_000 - 1);
+    expect(timed(html)).toBeLessThan(CEILING_MS);
+  });
+
+  it("survives 3 MB of unclosed <aside> tags (the 116-second case)", () => {
+    const html = "<aside>".repeat(430_000);
+    expect(timed(html)).toBeLessThan(CEILING_MS);
+  });
+
+  it("survives a large page of well-formed, closed tags too", () => {
+    // The pathological input above is unclosed tags; this one is the opposite,
+    // so that a fix which only special-cases "no closer found" is still tested.
+    const html = "<div><script>track();</script><p>1 lb shrimp</p></div>".repeat(60_000);
+    expect(timed(html)).toBeLessThan(CEILING_MS);
+  });
+
+  it("caps its own input, so the work is bounded no matter how big the page is", () => {
+    // The cheap half of the defence: the caller truncates extracted text to
+    // 20 000 chars anyway, so scanning 3 MB did ~93% of its work to throw the
+    // result away. Proven by behaviour rather than by reading the constant —
+    // text past the 300 KB cap must not appear in the output.
+    const filler = "<p>filler</p>".repeat(30_000); // ~390 KB, past the cap
+    const text = htmlToText(`${filler}<p>SENTINEL-INGREDIENT</p>`);
+    expect(text).toContain("filler");
+    expect(text).not.toContain("SENTINEL-INGREDIENT");
   });
 });

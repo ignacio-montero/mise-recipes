@@ -33,7 +33,15 @@ type Sent = { chatId: number | string; text: string };
 function makeDeps(over: Partial<Deps> = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
-  const createImport = vi.fn(async () => ({ kind: "enqueued" as const, id: "job1" }));
+  // The parameter is declared even though the body ignores it: `vi.fn(async () =>
+  // …)` infers an argument tuple of `[]`, so `mock.calls[0][0]` is a type error
+  // AND, worse, would silently type as `undefined` if the tuple were looser.
+  // Declaring the shape is what lets the assertions below read the call args.
+  type CreateImportInput = Parameters<Deps["api"]["createImport"]>[0];
+  const createImport = vi.fn(async (_input: CreateImportInput) => ({
+    kind: "enqueued" as const,
+    id: "job1",
+  }));
   const getImport = vi.fn(
     async (): Promise<ImportJobDTO> =>
       ({ id: "job1", status: "done", stage: null, url: "u", recipeId: "r1", recipe: RECIPE,

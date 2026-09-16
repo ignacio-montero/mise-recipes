@@ -19,6 +19,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { migrate, removeTempDatabase, useTempDatabase } from "./helpers/db";
 import { ExtractionError } from "@/lib/extract/classify";
+import { canonicalUrl } from "@/lib/canonicalUrl";
 import type { Gathered, ParsedRecipe } from "@/lib/types";
 
 const DB_FILE = useTempDatabase("worker");
@@ -100,7 +101,25 @@ const parsed = (over: Partial<ParsedRecipe> = {}): ParsedRecipe => ({
   ...over,
 });
 
+/** The spelling a human shares. */
 const URL_A = "https://www.instagram.com/reel/C9dO9AevUQx/";
+
+/**
+ * The spelling that ends up in `Recipe.sourceUrl`.
+ *
+ * INVARIANT worth stating out loud, because two tests in this file used to
+ * quietly violate it: `lib/worker.ts` `saveRecipe()` is the ONLY writer of
+ * `sourceUrl` in the whole app (`sourceUrl` is not in `WRITABLE_RECIPE_FIELDS`,
+ * so `POST /api/recipes` cannot set it), and it always writes
+ * `canonicalUrl(...)` output. So every row in the table holds the canonical
+ * form, and a test that seeds a recipe with a raw share URL is testing a state
+ * the system cannot reach.
+ *
+ * Derived here rather than hard-coded so this file cannot drift from the
+ * canonicaliser — but asserted against the literal below, so a silent change to
+ * the dedupe key still fails a test.
+ */
+const CANON_A = canonicalUrl(URL_A)!;
 
 beforeAll(async () => {
   vi.spyOn(Date, "now").mockImplementation(() => realNow() + clockOffset);
@@ -168,7 +187,13 @@ describe("the happy path", () => {
 
     const recipe = await prisma.recipe.findUnique({ where: { id: finished.recipeId! } });
     expect(recipe!.title).toBe("Crispy Shrimp Tacos");
-    expect(recipe!.sourceUrl).toBe(URL_A);
+    // `sourceUrl` is IDENTITY, not provenance: the worker stores the canonical
+    // form of the URL it actually resolved, not the spelling the user shared.
+    // It has to, because `sourceUrl` is UNIQUE and the share sheet emits a
+    // different spelling every time. Asserted against the literal so that a
+    // change to the canonicaliser breaks this test loudly.
+    expect(recipe!.sourceUrl).toBe("https://instagram.com/reel/C9dO9AevUQx");
+    expect(recipe!.sourceUrl).toBe(CANON_A);
     expect(recipe!.sourcePlatform).toBe("instagram");
     expect(recipe!.sourceAuthor).toBe("chefsomebody");
     // servingsCount is derived at write time from "6-8 tacos" because the cook
@@ -223,9 +248,12 @@ describe("a URL we already have", () => {
     // call to rediscover a row we already have — and must not throw on the
     // UNIQUE constraint either.
     const existing = await prisma.recipe.create({
-      data: { title: "Already here", sourceUrl: URL_A, ingredients: "[]", steps: "[]", tags: "[]" },
+      data: { title: "Already here", sourceUrl: CANON_A, ingredients: "[]", steps: "[]", tags: "[]" },
     });
-    const job = await enqueue(URL_A);
+    // `POST /api/imports` canonicalises before it writes the row, so a job url
+    // is always already canonical. Seeding the raw spelling here would test a
+    // state the queue cannot contain.
+    const job = await enqueue(CANON_A);
     worker.startWorker();
 
     const finished = await waitForJob(job.id, terminal);
@@ -236,19 +264,75 @@ describe("a URL we already have", () => {
     expect(await prisma.recipe.count()).toBe(1);
   });
 
-  it("also collapses a short link onto the recipe its canonical URL created", async () => {
-    // vm.tiktok.com/XYZ and the full URL it redirects to are one recipe: the
-    // duplicate check looks at BOTH the job's url and the resolved canonical.
+  it("collapses a share link onto the recipe its RESOLVED canonical URL created", async () => {
+    // The C1 case. The iOS share sheet emits `instagram.com/share/<token>` with
+    // a FRESH token every time, so two shares of one reel are two different
+    // URLs at enqueue time and the route's dedupe cannot possibly catch them.
+    // The worker is the first place the real identity is known — it resolved the
+    // redirect — so the authoritative check is `canonicalUrl(gathered.canonicalUrl)`
+    // against what is already stored.
+    //
+    // ⚠️ This test previously seeded `sourceUrl: URL_A` (the raw, non-canonical
+    // spelling) and failed. That was the FIXTURE being wrong, not the fix: see
+    // the note on CANON_A — `saveRecipe()` is the only writer of `sourceUrl` and
+    // it always canonicalises, so a stored non-canonical URL is unreachable.
     const existing = await prisma.recipe.create({
-      data: { title: "Already here", sourceUrl: URL_A, ingredients: "[]", steps: "[]", tags: "[]" },
+      data: { title: "Already here", sourceUrl: CANON_A, ingredients: "[]", steps: "[]", tags: "[]" },
     });
-    const job = await enqueue("https://www.instagram.com/share/BAF6qMfDnE/");
+    const job = await enqueue("https://instagram.com/share/BAF6qMfDnE");
     worker.startWorker();
 
     const finished = await waitForJob(job.id, terminal);
     expect(finished.status).toBe("done");
     expect(finished.recipeId).toBe(existing.id);
     expect(await prisma.recipe.count()).toBe(1);
+    // The cheap pre-check could NOT have caught this one — the share token is
+    // not the reel's id — so this proves the post-resolution check, not the
+    // early return.
+    expect(stubs.gather).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves ONE recipe when the same reel is shared twice under two share tokens", async () => {
+    // The end-to-end version of the same property, with nothing pre-seeded:
+    // two share URLs that share no substring, both resolving to one reel. This
+    // is the shape the bug actually took in the wild ("every reel saved twice").
+    const first = await enqueue("https://instagram.com/share/AAAAAAAAAA");
+    worker.startWorker();
+    const one = await waitForJob(first.id, terminal);
+    expect(one.status).toBe("done");
+
+    const second = await enqueue("https://instagram.com/share/BBBBBBBBBB");
+    const two = await waitForJob(second.id, terminal);
+    expect(two.status).toBe("done");
+
+    expect(two.recipeId).toBe(one.recipeId);
+    expect(await prisma.recipe.count()).toBe(1);
+    const saved = await prisma.recipe.findFirstOrThrow();
+    // …and the row holds the reel's identity, not either share token.
+    expect(saved.sourceUrl).toBe(CANON_A);
+  });
+
+  it("does NOT collapse two different reels that happen to arrive as short links", async () => {
+    // The **negative** half of a dedupe test, and the one people forget. A
+    // canonicaliser that is too aggressive (e.g. "strip the whole query string"
+    // applied to youtube.com/watch?v=) makes every second import a false
+    // duplicate pointing at someone else's recipe — a far worse bug than a
+    // duplicate row, because the user silently loses the recipe they saved.
+    stubs.gather = vi.fn(async (url: string) =>
+      gathered({
+        canonicalUrl: url.endsWith("AAAA")
+          ? "https://www.instagram.com/reel/C9dO9AevUQx/"
+          : "https://www.instagram.com/reel/C41MJlUSKcU/",
+      }),
+    );
+
+    const a = await enqueue("https://instagram.com/share/AAAA");
+    worker.startWorker();
+    await waitForJob(a.id, terminal);
+    const b = await enqueue("https://instagram.com/share/ZZZZ");
+    await waitForJob(b.id, terminal);
+
+    expect(await prisma.recipe.count()).toBe(2);
   });
 });
 
@@ -371,6 +455,60 @@ describe("crash recovery at startup", () => {
     const finished = await waitForJob(job.id, terminal);
     expect(finished.status).toBe("done");
     expect(finished.attempts).toBe(2); // 1 from the interrupted run + 1 now
+  });
+
+  // ── Lease expiry ───────────────────────────────────────────────────────────
+  // `bootstrap()` above covers "the process died". These two cover "the process
+  // is alive and dropped the ball": if the write inside `handleFailure` itself
+  // throws (SQLITE_BUSY, disk full), the row stays `running` forever and that
+  // URL becomes permanently un-importable, because POST /api/imports treats a
+  // running job as in-flight and hands back the dead id.
+  //
+  // CONCEPT — **visibility timeout**. Every real queue (SQS, Redis streams) has
+  // one: claiming a job is a LEASE, and a lease must expire, because the holder
+  // cannot be trusted to give it back. `reclaimStaleLeases()` is that idea in
+  // fifteen lines of SQL.
+  //
+  // Note how the clock is handled: the fake `Date.now` this file already owns is
+  // moved FORWARD past the 15-minute timeout, rather than back-dating the row.
+  // Same trick as the retry-cooldown tests — the alternative is a test that
+  // sleeps for fifteen minutes.
+  describe("expired leases", () => {
+    it("requeues a 'running' row that has not been touched in 15 minutes", async () => {
+      worker.startWorker();
+      await settle(); // let bootstrap() finish, so this is NOT the startup sweep
+
+      const job = await prisma.importJob.create({
+        data: { url: URL_A, status: "running", stage: "transcribing", attempts: 1 },
+      });
+      advanceClock(16 * 60 * 1000);
+
+      const finished = await waitForJob(job.id, terminal);
+      expect(finished.status).toBe("done");
+      // 1 from the abandoned attempt + 1 for this one. `attempts` is NOT reset,
+      // which is what stops a genuinely poisonous job looping forever.
+      expect(finished.attempts).toBe(2);
+    });
+
+    it("leaves a lease that is still fresh alone", async () => {
+      // The other half of the boundary: reclaiming eagerly would mean two
+      // workers running the same 40-second import, which is exactly what the
+      // serial-by-design worker exists to prevent.
+      worker.startWorker();
+      await settle();
+
+      const job = await prisma.importJob.create({
+        data: { url: URL_A, status: "running", stage: "transcribing", attempts: 1 },
+      });
+      advanceClock(60 * 1000); // one minute in: well inside the timeout
+
+      await settle();
+      await settle();
+      const still = await prisma.importJob.findUnique({ where: { id: job.id } });
+      expect(still!.status).toBe("running");
+      expect(still!.attempts).toBe(1);
+      expect(stubs.gather).not.toHaveBeenCalled();
+    });
   });
 
   it("sweeps the temp directory at startup", async () => {
