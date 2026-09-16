@@ -132,7 +132,7 @@ Full field list: `prisma/schema.prisma`.
 
 ## 5. Security posture
 
-- Tailnet-only binding (`100.74.128.98`), never `0.0.0.0` — Docker bypasses UFW.
+- Tailnet-only binding (`<tailnet-ip>`), never `0.0.0.0` — Docker bypasses UFW.
 - No auth on the web app (single implicit user behind Tailscale), exactly as
   Blue Plaque Hunter.
 - `POST /api/imports` requires `x-mise-token` — defence in depth so the bot is

@@ -18,7 +18,7 @@ import { handleUpdate, PendingImports, type Deps } from "@/bot/handlers";
 import { TelegramClient, TelegramError, type TgUpdate } from "@/bot/telegram";
 import type { ImportJobDTO, RecipeDTO } from "@/lib/types";
 
-const OWNER_CHAT = "6519408112";
+const OWNER_CHAT = "1234567890";
 
 const RECIPE = {
   id: "r1",

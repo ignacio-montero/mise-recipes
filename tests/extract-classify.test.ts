@@ -66,7 +66,7 @@ describe("refusing addresses inside the network", () => {
     // reachable at a 100.x address, so this is the range an attacker would aim
     // at, and it is NOT in most people's mental list of private ranges.
     expect(isPrivateIp("100.64.0.0")).toBe(true);
-    expect(isPrivateIp("100.74.128.98")).toBe(true); // this box
+    expect(isPrivateIp("100.74.128.98")).toBe(true); // CGNAT = the tailnet this app runs on
     expect(isPrivateIp("100.127.255.255")).toBe(true);
     // ...and the addresses immediately outside it are still public.
     expect(isPrivateIp("100.63.255.255")).toBe(false);

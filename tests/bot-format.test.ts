@@ -302,7 +302,7 @@ describe("the user-facing message catalogue (API_SPEC §7)", () => {
   });
 
   it("renders the chat id as code so it can be copied", () => {
-    expect(chatIdText(6519408112)).toContain("<code>6519408112</code>");
+    expect(chatIdText(1234567890)).toContain("<code>1234567890</code>");
   });
 
   it("builds a deep link without a double slash", () => {

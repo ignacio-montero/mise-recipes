@@ -9,7 +9,7 @@ app by default and the Telegram bot with `command: ["bot"]`. They share
 
 ## Conventions this obeys (from the homelab repo)
 
-- Published port bound to the **tailnet IP `100.74.128.98`**, never `0.0.0.0` —
+- Published port bound to the **tailnet IP `<tailnet-ip>`**, never `0.0.0.0` —
   Docker's iptables rules bypass UFW, so a `0.0.0.0` bind silently exposes the
   service to the whole LAN.
 - Pinned, versioned GHCR image. **The box pulls; it never builds.**
@@ -37,7 +37,7 @@ make publish VERSION=0.1.0
 # 2. Add the service to the homelab control repo.
 mkdir -p ~/Development/homelab/services/mise
 cp docker-compose.yml ~/Development/homelab/services/mise/docker-compose.yml
-#    …then edit it: bind 100.74.128.98:3003:3000 (not 127.0.0.1).
+#    …then edit it: bind <tailnet-ip>:3003:3000 (not 127.0.0.1).
 #    Add this line to ~/Development/homelab/compose.yaml:
 #      - services/mise/docker-compose.yml
 cd ~/Development/homelab && git add -A && git commit -m "feat: add mise" && git push
@@ -46,10 +46,10 @@ cd ~/Development/homelab && git add -A && git commit -m "feat: add mise" && git 
 ssh homelab 'cat > ~/homelab/services/mise/.env' <<'ENV'
 GEMINI_API_KEY=...
 OSTA_INGEST_TOKEN=...            # any long random string
-MISE_PUBLIC_BASE=http://100.74.128.98:3003
+MISE_PUBLIC_BASE=http://<tailnet-ip>:3003
 # Bot only — needs its OWN token, see docs/DECISIONS.md D-003:
 TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=6519408112
+TELEGRAM_CHAT_ID=<your-chat-id>
 ENV
 ssh homelab 'chmod 600 ~/homelab/services/mise/.env'
 
@@ -95,8 +95,8 @@ future service worker — both require a secure context. **This is a networking
 change: confirm before running, and it needs an interactive sudo password.**
 
 ```bash
-ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://100.74.128.98:3003'
-# → https://homelab.tailf48262.ts.net:8443
+ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://<tailnet-ip>:3003'
+# → https://<node>.<tailnet>.ts.net:8443
 # Rollback: ssh -t homelab 'sudo tailscale serve --https=8443 off'
 ```
 

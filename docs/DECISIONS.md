@@ -106,7 +106,7 @@ handling for no benefit at this scale.
 ---
 
 ### D-008 — Tailnet-only over plain HTTP first; HTTPS is a follow-up (2026-09-15)
-**What.** `mise-web` publishes `100.74.128.98:3003` (HTTP). The Tailscale HTTPS
+**What.** `mise-web` publishes `<tailnet-ip>:3003` (HTTP). The Tailscale HTTPS
 name is **not** wired up in this pass.
 **Why.** `tailscale serve --https=443` on the box already proxies its root path
 to plaque-hunter, so Mise needs either a sub-path (which forces a Next.js
@@ -118,8 +118,8 @@ does not have passwordless. So it cannot be done unattended.
 `navigator.clipboard.readText()` (the Paste button on `/add`) and any future
 service worker. Everything else works over HTTP on the tailnet.
 **The follow-up (needs the user's password + a yes):**
-`ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://100.74.128.98:3003'`
-→ `https://homelab.tailf48262.ts.net:8443`. Rollback:
+`ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://<tailnet-ip>:3003'`
+→ `https://<node>.<tailnet>.ts.net:8443`. Rollback:
 `sudo tailscale serve --https=8443 off`.
 
 ---

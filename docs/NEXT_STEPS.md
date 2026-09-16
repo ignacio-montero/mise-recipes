@@ -14,10 +14,10 @@
 | Telegram bot | ✅ Built + containerised — **not running, needs a token** |
 | Tests | ✅ **430 passing, 0 failing**; `npx tsc --noEmit` clean |
 | Red-team review | ✅ 3 critical + 5 warnings, all fixed and re-verified |
-| Deployed | ✅ `http://100.74.128.98:3003` — tailnet only, healthy |
+| Deployed | ✅ `http://<tailnet-ip>:3003` — tailnet only, healthy |
 
 **How to use it right now (no bot needed):** on the phone, with Tailscale up,
-open **<http://100.74.128.98:3003>** → **Add** → paste an Instagram/TikTok/recipe
+open **<http://<tailnet-ip>:3003>** → **Add** → paste an Instagram/TikTok/recipe
 link → it imports in ~10 s. Add to the Home Screen from **Safari**
 (Share → Add to Home Screen); Chrome on iOS silently makes a non-standalone
 shortcut instead.
@@ -60,8 +60,8 @@ No code change is needed. Then: Share a Reel → Telegram → Mise bot → done.
 2. **HTTPS** (`docs/DECISIONS.md` D-008). Needs your sudo password, so it could
    not be done unattended. Until then the Paste button on `/add` is degraded —
    `navigator.clipboard` requires a secure context.
-   `ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://100.74.128.98:3003'`
-   → `https://homelab.tailf48262.ts.net:8443`, then set `MISE_PUBLIC_BASE` to match.
+   `ssh -t homelab 'sudo tailscale serve --bg --https=8443 http://<tailnet-ip>:3003'`
+   → `https://<node>.<tailnet>.ts.net:8443`, then set `MISE_PUBLIC_BASE` to match.
    Rollback: `sudo tailscale serve --https=8443 off`.
 3. **Give Mise its own `GEMINI_API_KEY`** — it currently shares Media Tracker's,
    so quota and revocation are entangled. <https://aistudio.google.com/apikey>.
@@ -93,7 +93,7 @@ No code change is needed. Then: Share a Reel → Telegram → Mise bot → done.
 
 ```bash
 # Health + worker liveness
-ssh homelab 'curl -s http://100.74.128.98:3003/api/health'
+ssh homelab 'curl -s http://<tailnet-ip>:3003/api/health'
 ssh homelab 'docker logs --tail 40 mise-web'
 
 # Ship a change

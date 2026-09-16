@@ -85,10 +85,11 @@ function mergeGathered(base: Gathered, part: Partial<Gathered>): Gathered {
 async function audioTranscript(
   canonicalUrl: string,
   maxSeconds: number,
+  knownDurationSeconds: number | null,
 ): Promise<{ text: string; model: string } | null> {
   const dir = await makeTempDir("audio");
   try {
-    const audio = await ytdlpAudio(canonicalUrl, dir, maxSeconds);
+    const audio = await ytdlpAudio(canonicalUrl, dir, maxSeconds, knownDurationSeconds);
     if (!audio) return null;
     return await transcribeAudio(audio.filePath, audio.mimeType);
   } finally {
@@ -127,15 +128,20 @@ async function maybeAddAudio(g: Gathered, onStage?: StageListener): Promise<Gath
     });
   }
 
+  // Only a duration we KNOW to be too long is a reason to skip. An UNKNOWN
+  // duration is not evidence of anything — and Instagram reports `duration: NA`
+  // for every reel, so refusing on null meant the audio tier never once ran on
+  // the platform it matters most for. The download stays bounded by
+  // `--max-filesize` and a SIGKILL timeout either way (see lib/ytdlp.ts).
   const seconds = g2.durationSeconds;
-  if (seconds === null || seconds > config.extraction.maxAudioSeconds) {
-    console.warn(`[extract] audio tier skipped: duration ${seconds ?? "unknown"}s`);
+  if (seconds !== null && seconds > config.extraction.maxAudioSeconds) {
+    console.warn(`[extract] audio tier skipped: ${seconds}s exceeds ${config.extraction.maxAudioSeconds}s`);
     return g2;
   }
 
   onStage?.("transcribing");
   try {
-    const t = await audioTranscript(g2.canonicalUrl, config.extraction.maxAudioSeconds);
+    const t = await audioTranscript(g2.canonicalUrl, config.extraction.maxAudioSeconds, seconds);
     if (!t) return g2;
     return mergeGathered(g2, {
       tiers: [TIER2_PREFIX + t.model],

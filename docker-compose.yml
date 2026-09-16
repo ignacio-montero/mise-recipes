@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "127.0.0.1:3003:3000"      # homelab uses 100.74.128.98:3003:3000
+      - "127.0.0.1:3003:3000"      # homelab uses <tailnet-ip>:3003:3000
     env_file: .env                  # GEMINI_API_KEY, OSTA_INGEST_TOKEN — untracked
     environment:
       DATABASE_URL: "file:/app/data/mise.db"

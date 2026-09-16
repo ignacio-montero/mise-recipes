@@ -11,7 +11,7 @@
 //      collapse to the same row.
 //   2. GUARD — a URL that arrived over Telegram is attacker-controlled data.
 //      This box sits on a tailnet next to other services, so a URL pointing at
-//      `http://127.0.0.1:9000/` or `http://100.74.128.98:8080/` would turn our
+//      `http://127.0.0.1:9000/` or `http://100.74.128.98:8080/` (a tailnet peer) would turn our
 //      fetcher into a confused deputy (SSRF). Hosts are allowlisted for the
 //      social platforms; everything else must at least resolve to a public IP.
 

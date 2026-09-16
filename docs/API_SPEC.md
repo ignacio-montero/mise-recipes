@@ -79,7 +79,7 @@ Header `x-mise-token: <OSTA_INGEST_TOKEN>` is **required when `source` is
 // request
 { "url": "https://www.instagram.com/reel/C9dO9AevUQx/",
   "source": "telegram" | "web",
-  "chatId": "6519408112",   // telegram only — where to report back
+  "chatId": "<your-chat-id>",   // telegram only — where to report back
   "messageId": 4471,        // telegram only — the message to EDIT with the result
   "text": "…pasted caption…" // optional: skip fetching, structure this text
 }
@@ -125,6 +125,7 @@ Returns `{ jobs: ImportJobDTO[] }`. Jobs with `status: "done"` carry the full
 | `PATCH` | `/api/recipes/:id` | Partial. Accepts `title, description, servings, servingsCount, totalMinutes, ingredients, steps, notes, tags, favorite, heroImagePath`. Rejects unknown keys with `bad_request`. Returns `{ recipe }`. |
 | `DELETE` | `/api/recipes/:id` | `204`. Cascades folder links; grocery items are kept but unlinked. |
 | `POST` | `/api/recipes/:id/cooked` | Increments `cookedCount`, stamps `lastCookedAt`. Returns `{ recipe }`. |
+| `DELETE` | `/api/recipes/:id/cooked` | **Undo one cook.** Decrements `cookedCount` with a floor of 0, and sets `lastCookedAt` to `null` when the count reaches 0 (above 0 it is left alone — there is no cook history to restore the previous date from). Returns **`{ recipe }` with 200**, not 204: the caller needs the new count. **Idempotent at zero** — undoing an already-zero count is a no-op that still answers 200, so a double tap is harmless. Unknown id → 404 `not_found`. |
 | `PUT` | `/api/recipes/:id/folders` | Body `{ folderIds: string[] }` — replaces the set. Returns `{ recipe }`. |
 | `POST` | `/api/recipes` | Manual create. Body = any subset of the writable fields plus required `title`. `sourcePlatform` is forced to `manual` and `sourceUrl`/`sourcePlatform` are **not accepted** — a link you want saved goes through `POST /api/imports`. |
 
@@ -136,6 +137,14 @@ Returns `{ jobs: ImportJobDTO[] }`. Jobs with `status: "done"` carry the full
 | `POST` | `/api/folders` | `{ name, emoji? }` → `201 { folder }`. Duplicate name → `409 conflict`. |
 | `PATCH` | `/api/folders/:id` | `{ name?, emoji? }` |
 | `DELETE` | `/api/folders/:id` | `204`. Deletes links, never recipes. |
+
+> **Known gap — there is no "unfiled" filter.** `GET /api/recipes?folder=<id>`
+> can only ask for recipes *in* a folder, so the home screen's **Unfiled** chip
+> filters `folderIds.length === 0` on the client over the page it already has
+> (`filterByFolder` in `components/folders.ts`). That is correct for a single
+> user with one page of recipes and wrong the moment the list paginates. The
+> fix, when it is needed, is a reserved value — `?folder=none` → `where.folders
+> = { none: {} }` — not more client-side filtering.
 
 ## 5. Grocery list
 

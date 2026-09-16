@@ -130,16 +130,34 @@ export async function ytdlpAudio(
   url: string,
   dir: string,
   maxSeconds: number,
+  /** Null when the platform never told us (Instagram always does this). */
+  knownDurationSeconds: number | null = null,
 ): Promise<{ filePath: string; mimeType: string } | null> {
   if (!classify(url).ok) return null;
+
+  // ⚠️ `--match-filter duration < N` REJECTS a video whose duration is unknown,
+  // not just one that is too long — and appending yt-dlp's `?` "optional field"
+  // suffix does not change that (measured against a real reel on 2026-09-16:
+  // both `duration < 301` and `duration<301?` logged "does not pass filter").
+  // Instagram's extractor reports `duration: NA`, so keeping the filter
+  // unconditionally meant the audio tier could NEVER run on a Reel — the exact
+  // case it exists for.
+  //
+  // So the filter is only applied when we actually know the duration. When we
+  // do not, the bound is `--max-filesize` plus the SIGKILL timeout on the
+  // subprocess: a long video blows the byte cap and is aborted mid-download,
+  // which protects the SSD just as well, only less precisely.
+  const durationFilter =
+    knownDurationSeconds !== null
+      ? ["--match-filter", `duration < ${Math.max(1, Math.floor(maxSeconds) + 1)}`]
+      : [];
 
   const common = [
     ...cookieArgs(),
     "--socket-timeout", "20",
-    // A belt-and-braces cap: even if our duration check was fooled by missing
-    // metadata, yt-dlp aborts rather than filling the SSD.
+    // The real ceiling. Holds whether or not the duration was known.
     "--max-filesize", "48M",
-    "--match-filter", `duration < ${Math.max(1, Math.floor(maxSeconds) + 1)}`,
+    ...durationFilter,
     "--no-part",
   ];
 
